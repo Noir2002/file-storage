@@ -611,6 +611,29 @@
                         <li>部署到静态托管平台（Netlify/Vercel等）</li>
                     </ol>
                 </div>
+                <!-- 运行时配置表单（保存在本地，不提交到仓库） -->
+                <div class="form-group" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; align-items: end;">
+                    <div>
+                        <label for="ghOwner">GitHub 用户名/组织</label>
+                        <input id="ghOwner" placeholder="如：Noir2002" />
+                    </div>
+                    <div>
+                        <label for="ghRepo">仓库名</label>
+                        <input id="ghRepo" placeholder="如：file-storage" />
+                    </div>
+                    <div>
+                        <label for="ghBranch">分支</label>
+                        <input id="ghBranch" placeholder="如：main" />
+                    </div>
+                    <div>
+                        <label for="ghToken">Personal Access Token</label>
+                        <input id="ghToken" type="password" placeholder="填入你的 PAT（仅保存在本机）" />
+                    </div>
+                    <div style="grid-column: 1 / -1; display: flex; gap: 10px;">
+                        <button class="btn btn-secondary" onclick="saveGitHubConfig()">保存配置</button>
+                        <button class="btn" onclick="clearGitHubConfig()">清除配置</button>
+                    </div>
+                </div>
                 
                 <div class="form-group">
                     <label>当前配置状态：</label>
@@ -694,6 +717,9 @@
         </div>
     </div>
 
+    <!-- 本地私密配置（不会提交到 Git） -->
+    <script src=".env.local.js"></script>
+
     <!-- LP 选择弹窗 -->
     <div id="lpSelectionModal" class="modal-overlay">
         <div class="modal">
@@ -717,11 +743,63 @@
 
         // GitHub 存储配置（需要替换为您的信息）
         const GITHUB_CONFIG = {
-            owner: 'Noir2002',  // 替换为您的 GitHub 用户名
-            repo: 'file-storage',    // 替换为您的仓库名
-            token: 'your-token',     // 替换为您的GitHub Token
-            branch: 'main'
+            owner: 'Noir2002',  // 默认展示，可在表单中覆盖
+            repo: 'file-storage',
+            token: '',          // 运行时填写（本地存储），避免将密钥提交到仓库
+            branch: 'main',
+            useProxy: true,             // 默认走服务端代理，稳定且安全
+            proxyEndpoint: '/api/upload'
         };
+
+        function loadGitHubConfig() {
+            try {
+                const owner = localStorage.getItem('gh_owner');
+                const repo = localStorage.getItem('gh_repo');
+                const branch = localStorage.getItem('gh_branch');
+                const token = localStorage.getItem('gh_token');
+                const useProxy = localStorage.getItem('gh_useProxy');
+                const proxyEndpoint = localStorage.getItem('gh_proxyEndpoint');
+                if (owner) GITHUB_CONFIG.owner = owner;
+                if (repo) GITHUB_CONFIG.repo = repo;
+                if (branch) GITHUB_CONFIG.branch = branch;
+                if (token) GITHUB_CONFIG.token = token;
+                if (useProxy !== null) GITHUB_CONFIG.useProxy = useProxy === 'true';
+                if (proxyEndpoint) GITHUB_CONFIG.proxyEndpoint = proxyEndpoint;
+                // 回填表单
+                const $ = (id) => document.getElementById(id);
+                if ($('ghOwner')) $('ghOwner').value = GITHUB_CONFIG.owner || '';
+                if ($('ghRepo')) $('ghRepo').value = GITHUB_CONFIG.repo || '';
+                if ($('ghBranch')) $('ghBranch').value = GITHUB_CONFIG.branch || '';
+                if ($('ghToken')) $('ghToken').value = GITHUB_CONFIG.token || '';
+            } catch (_) {}
+        }
+
+        function saveGitHubConfig() {
+            const $ = (id) => document.getElementById(id);
+            const owner = ($('ghOwner')?.value || '').trim();
+            const repo = ($('ghRepo')?.value || '').trim();
+            const branch = ($('ghBranch')?.value || '').trim();
+            const token = ($('ghToken')?.value || '').trim();
+            // 代理参数可通过控制台或后续表单扩展设置
+            const useProxy = GITHUB_CONFIG.useProxy;
+            const proxyEndpoint = GITHUB_CONFIG.proxyEndpoint;
+            if (owner) { localStorage.setItem('gh_owner', owner); GITHUB_CONFIG.owner = owner; }
+            if (repo) { localStorage.setItem('gh_repo', repo); GITHUB_CONFIG.repo = repo; }
+            if (branch) { localStorage.setItem('gh_branch', branch); GITHUB_CONFIG.branch = branch; }
+            if (token) { localStorage.setItem('gh_token', token); GITHUB_CONFIG.token = token; }
+            localStorage.setItem('gh_useProxy', String(useProxy));
+            localStorage.setItem('gh_proxyEndpoint', proxyEndpoint || '/api/upload');
+            checkGitHubConfig();
+            showStatus('githubConfigStatus', '✅ 已保存配置（仅保存在本机）', 'success');
+        }
+
+        function clearGitHubConfig() {
+            ['gh_owner','gh_repo','gh_branch','gh_token'].forEach(k => localStorage.removeItem(k));
+            GITHUB_CONFIG.token = '';
+            loadGitHubConfig();
+            checkGitHubConfig();
+            showStatus('githubConfigStatus', '❌ 已清除本机配置', 'error');
+        }
 
         // 挂起的上传上下文 & 多匹配候选
         let pendingUploadContext = null;
@@ -819,8 +897,28 @@
                 const base64 = await fileToBase64(file);
                 const content = base64.split(',')[1]; // 移除 data:*;base64, 前缀
 
+                // 优先走代理（服务端持有 Token，更稳定）
+                if (GITHUB_CONFIG.useProxy && GITHUB_CONFIG.proxyEndpoint) {
+                    const proxyRes = await fetch(GITHUB_CONFIG.proxyEndpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            owner: GITHUB_CONFIG.owner,
+                            repo: GITHUB_CONFIG.repo,
+                            branch: GITHUB_CONFIG.branch,
+                            folderPath,
+                            fileName,
+                            contentBase64: content
+                        })
+                    });
+                    if (!proxyRes.ok) throw new Error(`Proxy错误: ${proxyRes.status}`);
+                    const data = await proxyRes.json();
+                    if (!data.success) throw new Error(data.error || 'Proxy返回失败');
+                    return data;
+                }
+
+                // 直传（前端持有 Token）
                 const url = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${folderPath}/${fileName}`;
-                
                 const response = await fetch(url, {
                     method: 'PUT',
                     headers: {
@@ -833,17 +931,11 @@
                         branch: GITHUB_CONFIG.branch
                     })
                 });
-
                 if (response.ok) {
                     const result = await response.json();
-                    return {
-                        success: true,
-                        url: `https://cdn.jsdelivr.net/gh/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}@${GITHUB_CONFIG.branch}/${folderPath}/${fileName}`,
-                        downloadUrl: result.download_url
-                    };
-                } else {
-                    throw new Error(`GitHub API错误: ${response.status}`);
+                    return { success: true, url: `https://cdn.jsdelivr.net/gh/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}@${GITHUB_CONFIG.branch}/${folderPath}/${fileName}`, downloadUrl: result.download_url };
                 }
+                throw new Error(`GitHub API错误: ${response.status}`);
             } catch (error) {
                 console.error('上传到GitHub失败:', error);
                 return { success: false, error: error.message };
@@ -880,9 +972,11 @@
                 return;
             }
 
-            // 检查GitHub配置
-            if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo || !GITHUB_CONFIG.branch || !GITHUB_CONFIG.token ||
-                GITHUB_CONFIG.owner === 'your-username' || GITHUB_CONFIG.repo === 'your-repo' || GITHUB_CONFIG.token === 'your-token') {
+            const usingProxy = GITHUB_CONFIG.useProxy && !!GITHUB_CONFIG.proxyEndpoint;
+            // 检查GitHub配置（代理模式下无需前端 token）
+            if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo || !GITHUB_CONFIG.branch ||
+                (!usingProxy && (!GITHUB_CONFIG.token || GITHUB_CONFIG.token === 'your-token')) ||
+                GITHUB_CONFIG.owner === 'your-username' || GITHUB_CONFIG.repo === 'your-repo') {
                 showStatus('uploadStatus', '⚠️ 请先配置 GitHub 存储信息（见使用说明）', 'error');
                 return;
             }
@@ -1143,6 +1237,9 @@
 
         // 输入与移动端优化
         document.addEventListener('DOMContentLoaded', function() {
+            // 载入本地 GitHub 配置
+            loadGitHubConfig();
+            checkGitHubConfig();
             document.getElementById('lpSuffix').addEventListener('input', function(e) {
                 e.target.value = e.target.value.replace(/[^0-9]/g, '');
             });
@@ -1418,11 +1515,11 @@
         // 配置检查
         function checkGitHubConfig() {
             const statusElement = document.getElementById('githubConfigStatus');
-            
+            const usingProxy = GITHUB_CONFIG.useProxy && !!GITHUB_CONFIG.proxyEndpoint;
             const notReady = !GITHUB_CONFIG.owner || GITHUB_CONFIG.owner === 'your-username' ||
                              !GITHUB_CONFIG.repo || GITHUB_CONFIG.repo === 'your-repo' ||
-                             !GITHUB_CONFIG.token || GITHUB_CONFIG.token === 'your-token' ||
-                             !GITHUB_CONFIG.branch;
+                             !GITHUB_CONFIG.branch ||
+                             (!usingProxy && (!GITHUB_CONFIG.token || GITHUB_CONFIG.token === 'your-token'));
 
             if (notReady) {
                 statusElement.innerHTML = '❌ 请在代码中完整配置 GITHUB_CONFIG 参数';
