@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>文件存储管理系统</title>
+    <title>CB电商视频存储系统</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
@@ -363,6 +363,13 @@
             animation: modalSlideIn 0.3s ease;
         }
 
+        /* 数据库预览：移动端友好的表格样式 */
+        .db-table { border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: white; }
+        .db-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 15px; align-items: center; border-bottom: 1px solid #e2e8f0; }
+        .db-row:last-child { border-bottom: none; }
+        .db-header { background: #f7fafc; font-weight: 600; color: #2d3748; }
+        .db-cell { color: #4a5568; word-break: break-all; }
+
         @keyframes modalSlideIn {
             from { transform: translateY(-50px); opacity: 0; }
             to { transform: translateY(0); opacity: 1; }
@@ -465,6 +472,9 @@
                 margin: 20% auto;
                 width: 95%;
             }
+
+            /* 数据库预览在移动端折行显示 */
+            .db-row { grid-template-columns: 1fr; }
         }
 
         @media (max-width: 480px) {
@@ -487,7 +497,7 @@
     <!-- 导航栏 -->
     <nav class="navbar">
         <div class="nav-container">
-            <div class="nav-logo">📁 文件存储系统</div>
+            <div class="nav-logo">📁 CB电商视频存储系统</div>
             <button class="nav-toggle" onclick="toggleMobileMenu()">☰</button>
             <ul class="nav-menu" id="navMenu">
                 <li class="nav-item">
@@ -579,7 +589,7 @@
 
                     <div id="databasePreview" style="display: none; margin-top: 15px;">
                         <div id="databasePreviewSummary" style="color: #718096; margin-bottom: 8px;"></div>
-                        <div id="databasePreviewTable" class="file-list" style="max-height: 300px;"></div>
+                        <div id="databasePreviewTable" class="db-table" style="max-height: 360px; overflow:auto;"></div>
                     </div>
                 </div>
 
@@ -633,6 +643,7 @@
                     <button onclick="refreshFileList()" class="btn">🔄 刷新列表</button>
                     <button onclick="exportAllFiles()" class="btn btn-success">📦 导出所有文件</button>
                     <button onclick="syncDataFromGitHub()" class="btn btn-secondary">☁️ 从GitHub同步</button>
+                    <button onclick="openDeleteByFolderModal()" class="btn btn-danger">🗑️ 删除文件</button>
                 </div>
 
                 <div id="fileListContainer">
@@ -658,6 +669,21 @@
             <div id="lpOptions"></div>
             <div style="text-align: center; margin-top: 20px;">
                 <button onclick="closeLpSelection()" class="btn btn-secondary">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 按文件夹删除 模态框 -->
+    <div id="deleteByFolderModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>选择要删除的文件夹</h2>
+                <button class="close" onclick="closeDeleteByFolderModal()">&times;</button>
+            </div>
+            <div id="deleteFolderOptions"></div>
+            <div style="text-align: center; margin-top: 20px;">
+                <button onclick="confirmDeleteByFolder()" class="btn btn-danger">确定删除</button>
+                <button onclick="closeDeleteByFolderModal()" class="btn btn-secondary">取消</button>
             </div>
         </div>
     </div>
@@ -1074,14 +1100,14 @@
                 }
 
                 const header = `
-                    <div class="file-item" style="font-weight:600;">
-                        <div class="file-info"><div class="file-name">LP号</div></div>
-                        <div class="file-actions" style="min-width:200px; justify-content:flex-start; color:#4a5568;">履约单号</div>
+                    <div class="db-row db-header">
+                        <div class="db-cell">LP号</div>
+                        <div class="db-cell">履约单号</div>
                     </div>`;
                 const body = showRows.map(r => `
-                    <div class="file-item">
-                        <div class="file-info"><div class="file-name">${r.lp}</div></div>
-                        <div class="file-actions" style="min-width:200px; justify-content:flex-start; color:#4a5568;">${r.contract}</div>
+                    <div class="db-row">
+                        <div class="db-cell">${r.lp}</div>
+                        <div class="db-cell">${r.contract}</div>
                     </div>`).join('');
                 container.innerHTML = header + body;
             } catch (e) {
@@ -1684,6 +1710,11 @@
                 const folder = file.folder || 'unknown';
                 const date = /^[0-9]{8}/.test(folder) ? folder.slice(0, 8) : 'unknown';
 
+                // 在界面层隐藏 unknown
+                if (folder === 'unknown' || date === 'unknown') {
+                    continue;
+                }
+
                 if (!dates.has(date)) dates.set(date, { folderCount: 0, fileCount: 0 });
                 const stat = dates.get(date);
                 stat.fileCount += 1;
@@ -1700,6 +1731,56 @@
             }
 
             return { dates, foldersByDate, filesByFolder };
+        }
+
+        // —— 按文件夹删除 ——
+        let deleteFolderSelected = new Set();
+        function openDeleteByFolderModal() {
+            try {
+                deleteFolderSelected = new Set();
+                const modal = document.getElementById('deleteByFolderModal');
+                const list = document.getElementById('deleteFolderOptions');
+                // 直接从文件注册表收集所有文件夹（包含 unknown，方便清理）
+                const folders = new Set(Array.from(uploadedFiles.values()).map(f => (f && f.folder) ? f.folder : 'unknown'));
+                const items = Array.from(folders).sort((a, b) => b.localeCompare(a)).map(f => `
+                    <label style="display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid #e2e8f0;">
+                        <input type="checkbox" value="${f}" onchange="toggleDeleteFolderSelection(this)">
+                        <span style="word-break:break-all;">${f}</span>
+                    </label>
+                `).join('');
+                list.innerHTML = items || '<div style="color:#718096;">暂无可删除的文件夹</div>';
+                modal.style.display = 'block';
+            } catch (e) {
+                console.warn('打开删除对话框失败:', e);
+            }
+        }
+        function closeDeleteByFolderModal() {
+            document.getElementById('deleteByFolderModal').style.display = 'none';
+        }
+        function toggleDeleteFolderSelection(checkbox) {
+            const name = checkbox.value;
+            if (checkbox.checked) deleteFolderSelected.add(name); else deleteFolderSelected.delete(name);
+        }
+        function confirmDeleteByFolder() {
+            if (deleteFolderSelected.size === 0) {
+                alert('请先选择要删除的文件夹');
+                return;
+            }
+            if (!confirm('确定要删除所选文件夹内的所有文件记录吗？此操作不可恢复。')) return;
+            let changed = false;
+            for (const [key, file] of Array.from(uploadedFiles.entries())) {
+                if (file && deleteFolderSelected.has(file.folder)) {
+                    uploadedFiles.delete(key);
+                    changed = true;
+                }
+            }
+            if (changed) {
+                saveFilesToLocal();
+                saveFilesRegistryToGitHub().catch(err => console.warn('删除后同步失败:', err.message));
+            }
+            closeDeleteByFolderModal();
+            displayFileList();
+            showStatus('fileManageStatus', '✅ 已删除所选文件夹内的文件记录', 'success');
         }
 
         function deleteFile(fileName) {
