@@ -893,12 +893,20 @@
         // 上传文件到GitHub
         async function uploadToGitHub(file, folderPath, fileName) {
             try {
+                // 文件大小检查（GitHub限制100MB）
+                if (file.size > 100 * 1024 * 1024) {
+                    throw new Error(`文件过大: ${formatFileSize(file.size)}，GitHub限制100MB`);
+                }
+
                 // 将文件转换为base64
                 const base64 = await fileToBase64(file);
                 const content = base64.split(',')[1]; // 移除 data:*;base64, 前缀
 
+                console.log(`开始上传文件: ${fileName}, 大小: ${formatFileSize(file.size)}`);
+
                 // 优先走代理（服务端持有 Token，更稳定）
                 if (GITHUB_CONFIG.useProxy && GITHUB_CONFIG.proxyEndpoint) {
+                    console.log('使用代理模式上传...');
                     const proxyRes = await fetch(GITHUB_CONFIG.proxyEndpoint, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -911,14 +919,25 @@
                             contentBase64: content
                         })
                     });
-                    if (!proxyRes.ok) throw new Error(`Proxy错误: ${proxyRes.status}`);
+                    
+                    console.log(`代理响应状态: ${proxyRes.status}`);
+                    
+                    if (!proxyRes.ok) {
+                        const errorText = await proxyRes.text();
+                        throw new Error(`代理服务器错误 ${proxyRes.status}: ${errorText}`);
+                    }
+                    
                     const data = await proxyRes.json();
                     if (!data.success) throw new Error(data.error || 'Proxy返回失败');
+                    console.log('代理上传成功');
                     return data;
                 }
 
                 // 直传（前端持有 Token）
+                console.log('使用直传模式上传...');
                 const url = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${folderPath}/${fileName}`;
+                console.log('GitHub API URL:', url);
+                
                 const response = await fetch(url, {
                     method: 'PUT',
                     headers: {
@@ -931,13 +950,31 @@
                         branch: GITHUB_CONFIG.branch
                     })
                 });
+                
+                console.log(`GitHub API响应状态: ${response.status}`);
+                
                 if (response.ok) {
                     const result = await response.json();
-                    return { success: true, url: `https://cdn.jsdelivr.net/gh/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}@${GITHUB_CONFIG.branch}/${folderPath}/${fileName}`, downloadUrl: result.download_url };
+                    console.log('GitHub直传成功');
+                    return { 
+                        success: true, 
+                        url: `https://cdn.jsdelivr.net/gh/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}@${GITHUB_CONFIG.branch}/${folderPath}/${fileName}`, 
+                        downloadUrl: result.content.download_url 
+                    };
+                } else {
+                    const errorData = await response.json();
+                    throw new Error(`GitHub API错误 ${response.status}: ${errorData.message || '未知错误'}`);
                 }
-                throw new Error(`GitHub API错误: ${response.status}`);
             } catch (error) {
                 console.error('上传到GitHub失败:', error);
+                console.error('文件信息:', { name: fileName, size: file.size, type: file.type });
+                console.error('GitHub配置:', { 
+                    owner: GITHUB_CONFIG.owner, 
+                    repo: GITHUB_CONFIG.repo, 
+                    branch: GITHUB_CONFIG.branch,
+                    hasToken: !!GITHUB_CONFIG.token,
+                    useProxy: GITHUB_CONFIG.useProxy 
+                });
                 return { success: false, error: error.message };
             }
         }
@@ -1512,20 +1549,72 @@
             }
         }
 
-        // 配置检查
-        function checkGitHubConfig() {
+        // 配置检查（增强版）
+        async function checkGitHubConfig() {
             const statusElement = document.getElementById('githubConfigStatus');
             const usingProxy = GITHUB_CONFIG.useProxy && !!GITHUB_CONFIG.proxyEndpoint;
+            
+            // 基础配置检查
             const notReady = !GITHUB_CONFIG.owner || GITHUB_CONFIG.owner === 'your-username' ||
                              !GITHUB_CONFIG.repo || GITHUB_CONFIG.repo === 'your-repo' ||
                              !GITHUB_CONFIG.branch ||
                              (!usingProxy && (!GITHUB_CONFIG.token || GITHUB_CONFIG.token === 'your-token'));
 
             if (notReady) {
-                statusElement.innerHTML = '❌ 请在代码中完整配置 GITHUB_CONFIG 参数';
+                statusElement.innerHTML = '❌ 请完整配置 GitHub 参数 (owner/repo/branch/token)';
                 statusElement.className = 'alert alert-error';
+                return;
+            }
+
+            // 显示配置信息
+            let configInfo = `
+                <div><strong>配置信息:</strong></div>
+                <div>• 用户/组织: ${GITHUB_CONFIG.owner}</div>
+                <div>• 仓库: ${GITHUB_CONFIG.repo}</div>
+                <div>• 分支: ${GITHUB_CONFIG.branch}</div>
+                <div>• 模式: ${usingProxy ? '代理模式' : '直传模式'}</div>
+            `;
+
+            if (!usingProxy) {
+                statusElement.innerHTML = `✅ GitHub 配置完成 ${configInfo}`;
+                statusElement.className = 'alert alert-success';
+                
+                // 测试API连接
+                try {
+                    statusElement.innerHTML = `🔍 正在测试 GitHub API 连接... ${configInfo}`;
+                    statusElement.className = 'alert alert-info';
+                    
+                    const testUrl = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}`;
+                    const response = await fetch(testUrl, {
+                        headers: {
+                            'Authorization': `token ${GITHUB_CONFIG.token}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    if (response.ok) {
+                        const repoData = await response.json();
+                        statusElement.innerHTML = `✅ GitHub API 连接成功! ${configInfo}<div>• 仓库状态: ${repoData.private ? '私有' : '公开'}</div>`;
+                        statusElement.className = 'alert alert-success';
+                    } else if (response.status === 401) {
+                        statusElement.innerHTML = `❌ Token 无效或已过期 ${configInfo}<div><small>请重新生成 Personal Access Token</small></div>`;
+                        statusElement.className = 'alert alert-error';
+                    } else if (response.status === 403) {
+                        statusElement.innerHTML = `❌ Token 权限不足 ${configInfo}<div><small>请确保 Token 有 repo 权限</small></div>`;
+                        statusElement.className = 'alert alert-error';
+                    } else if (response.status === 404) {
+                        statusElement.innerHTML = `❌ 仓库不存在或无访问权限 ${configInfo}`;
+                        statusElement.className = 'alert alert-error';
+                    } else {
+                        statusElement.innerHTML = `⚠️ API 测试失败 (${response.status}) ${configInfo}`;
+                        statusElement.className = 'alert alert-error';
+                    }
+                } catch (error) {
+                    statusElement.innerHTML = `❌ 网络连接失败 ${configInfo}<div><small>错误: ${error.message}</small></div>`;
+                    statusElement.className = 'alert alert-error';
+                }
             } else {
-                statusElement.innerHTML = '✅ GitHub 配置已设置（保存并上传前可直接使用）';
+                statusElement.innerHTML = `✅ 代理模式配置完成 ${configInfo}<div><small>将通过服务器代理上传文件</small></div>`;
                 statusElement.className = 'alert alert-success';
             }
         }
