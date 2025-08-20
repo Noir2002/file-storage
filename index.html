@@ -654,9 +654,18 @@
                         📋 请确保 Excel 文件包含“LP号”和“履约单号”两列
                     </div>
                 </div>
-                <button onclick="importDatabase()" class="btn">导入数据库</button>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <button onclick="importDatabase()" class="btn">导入数据库</button>
+                    <button onclick="clearLocalStorage()" class="btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">清除本地数据</button>
+                </div>
 
                 <div id="databaseStatus"></div>
+
+                <!-- 本地存储状态显示 -->
+                <div id="localStorageStatus" class="alert alert-info" style="margin-top: 15px; display: none;">
+                    <strong>📊 本地存储状态</strong><br>
+                    <div id="storageInfo"></div>
+                </div>
 
                 <div id="databasePreview" style="display: none;">
                     <h3 style="margin-top: 30px; color: #333;">数据库预览：</h3>
@@ -740,6 +749,134 @@
         let uploadedFiles = new Map(); // 存储已上传的文件，按文件夹分组
         let selectionMode = false; // 是否处于选择导出模式
         let selectedItems = new Set(); // 选中文件键集合：folderName|fileKey
+
+        // 本地存储键名
+        const STORAGE_KEYS = {
+            DATABASE: 'fileStorage_database',
+            FILES: 'fileStorage_uploadedFiles',
+            VERSION: 'fileStorage_version'
+        };
+
+        // 当前数据版本（用于处理数据格式变更）
+        const DATA_VERSION = '1.0';
+
+        // 数据持久化函数
+        function saveDatabaseToLocal() {
+            try {
+                const dataObject = {};
+                databaseData.forEach((value, key) => {
+                    dataObject[key] = value;
+                });
+                localStorage.setItem(STORAGE_KEYS.DATABASE, JSON.stringify({
+                    version: DATA_VERSION,
+                    data: dataObject,
+                    timestamp: Date.now()
+                }));
+                console.log('数据库已保存到本地存储');
+            } catch (error) {
+                console.error('保存数据库到本地失败:', error);
+            }
+        }
+
+        function saveFilesToLocal() {
+            try {
+                const filesObject = {};
+                uploadedFiles.forEach((value, key) => {
+                    filesObject[key] = value;
+                });
+                localStorage.setItem(STORAGE_KEYS.FILES, JSON.stringify({
+                    version: DATA_VERSION,
+                    data: filesObject,
+                    timestamp: Date.now()
+                }));
+                console.log('文件记录已保存到本地存储');
+            } catch (error) {
+                console.error('保存文件记录到本地失败:', error);
+            }
+        }
+
+        function loadDatabaseFromLocal() {
+            try {
+                const stored = localStorage.getItem(STORAGE_KEYS.DATABASE);
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    if (parsed.version === DATA_VERSION && parsed.data) {
+                        databaseData.clear();
+                        Object.entries(parsed.data).forEach(([key, value]) => {
+                            databaseData.set(key, value);
+                        });
+                        console.log(`从本地存储加载了 ${databaseData.size} 条数据库记录`);
+                        return true;
+                    }
+                }
+            } catch (error) {
+                console.error('从本地加载数据库失败:', error);
+            }
+            return false;
+        }
+
+        function loadFilesFromLocal() {
+            try {
+                const stored = localStorage.getItem(STORAGE_KEYS.FILES);
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    if (parsed.version === DATA_VERSION && parsed.data) {
+                        uploadedFiles.clear();
+                        Object.entries(parsed.data).forEach(([key, value]) => {
+                            uploadedFiles.set(key, value);
+                        });
+                        console.log(`从本地存储加载了 ${uploadedFiles.size} 个文件夹记录`);
+                        return true;
+                    }
+                }
+            } catch (error) {
+                console.error('从本地加载文件记录失败:', error);
+            }
+            return false;
+        }
+
+        function clearLocalStorage() {
+            try {
+                localStorage.removeItem(STORAGE_KEYS.DATABASE);
+                localStorage.removeItem(STORAGE_KEYS.FILES);
+                databaseData.clear();
+                uploadedFiles.clear();
+                console.log('已清除所有本地存储数据');
+                updateFileDisplay();
+                updateStorageStatus();
+                showStatus('databaseStatus', '本地数据已清除', 'info');
+            } catch (error) {
+                console.error('清除本地存储失败:', error);
+            }
+        }
+
+        function updateStorageStatus() {
+            try {
+                const statusDiv = document.getElementById('localStorageStatus');
+                const infoDiv = document.getElementById('storageInfo');
+                
+                const dbCount = databaseData.size;
+                let fileCount = 0;
+                let folderCount = uploadedFiles.size;
+                
+                uploadedFiles.forEach(files => {
+                    fileCount += files.length;
+                });
+
+                if (dbCount > 0 || fileCount > 0) {
+                    statusDiv.style.display = 'block';
+                    infoDiv.innerHTML = `
+                        • 数据库记录: ${dbCount} 条<br>
+                        • 文件夹: ${folderCount} 个<br>
+                        • 文件记录: ${fileCount} 个
+                    `;
+                } else {
+                    statusDiv.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('更新存储状态失败:', error);
+            }
+        }
 
         // GitHub 存储配置（需要替换为您的信息）
         const GITHUB_CONFIG = {
@@ -843,7 +980,9 @@
                     });
 
                     if (successCount > 0) {
-                        showStatus('databaseStatus', `数据库导入成功！共导入 ${successCount} 条记录`, 'success');
+                        saveDatabaseToLocal(); // 自动保存到本地存储
+                        updateStorageStatus(); // 更新存储状态显示
+                        showStatus('databaseStatus', `数据库导入成功！共导入 ${successCount} 条记录（已保存到本地）`, 'success');
                         displayDatabasePreview();
                     } else {
                         showStatus('databaseStatus', '未找到有效数据，请检查Excel文件格式', 'error');
@@ -1110,7 +1249,12 @@
 
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                const fileName = `${Date.now()}_${file.name}`; // 添加时间戳避免重名
+                // 清理文件名：移除特殊字符，替换空格为下划线
+                const cleanName = file.name
+                    .replace(/[^a-zA-Z0-9.\-_\u4e00-\u9fa5]/g, '_') // 只保留字母、数字、点、横线、下划线和中文
+                    .replace(/\s+/g, '_') // 空格替换为下划线
+                    .replace(/_{2,}/g, '_'); // 多个下划线合并为一个
+                const fileName = `${Date.now()}_${cleanName}`; // 添加时间戳避免重名
 
                 try {
                     showStatus('uploadStatus', `正在上传: ${file.name} (${i + 1}/${totalFiles})`, 'info');
@@ -1128,6 +1272,7 @@
                         };
                         uploadedFiles.get(folderName).push(fileObj);
                         uploadedCount++;
+                        saveFilesToLocal(); // 每次成功上传后立即保存到本地存储
                     } else {
                         failedCount++;
                         console.error(`上传失败: ${file.name}`, result.error);
@@ -1151,6 +1296,7 @@
                     showStatus('uploadStatus', `❌ 所有文件上传失败，请检查网络和 GitHub 配置`, 'error');
                 }
                 updateFileDisplay();
+                updateStorageStatus(); // 更新存储状态
                 document.getElementById('uploadProgress').style.display = 'none';
                 document.getElementById('lpSuffix').value = '';
                 document.getElementById('fileInput').value = '';
@@ -1274,6 +1420,22 @@
 
         // 输入与移动端优化
         document.addEventListener('DOMContentLoaded', function() {
+            // 载入本地存储的数据
+            const dbLoaded = loadDatabaseFromLocal();
+            const filesLoaded = loadFilesFromLocal();
+            
+            // 如果有数据，显示状态和更新界面
+            if (dbLoaded) {
+                showStatus('databaseStatus', `已从本地存储加载 ${databaseData.size} 条数据库记录`, 'success');
+                displayDatabasePreview();
+            }
+            if (filesLoaded) {
+                updateFileDisplay();
+            }
+            
+            // 更新存储状态显示
+            updateStorageStatus();
+            
             // 载入本地 GitHub 配置
             loadGitHubConfig();
             checkGitHubConfig();
