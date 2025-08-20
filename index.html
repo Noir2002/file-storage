@@ -643,9 +643,6 @@
                 </div>
                 
                 <button onclick="checkGitHubConfig()" class="btn">检查配置</button>
-                <button onclick="runMobileDiagnostics()" class="btn" style="background: linear-gradient(135deg, #17a2b8, #138496);">📱 移动端诊断</button>
-                <button onclick="testMobileUpload()" class="btn" style="background: linear-gradient(135deg, #28a745, #20c997);">🧪 测试移动端上传</button>
-                <button onclick="debugRealUpload()" class="btn" style="background: linear-gradient(135deg, #fd7e14, #e55353);">🔍 真实上传调试</button>
                 <button onclick="toggleUploadMode()" class="btn" style="background: linear-gradient(135deg, #6f42c1, #007bff);" id="uploadModeBtn">🔄 切换上传模式</button>
             </div>
 
@@ -1090,8 +1087,18 @@
                 if (repo) GITHUB_CONFIG.repo = repo;
                 if (branch) GITHUB_CONFIG.branch = branch;
                 if (token) GITHUB_CONFIG.token = token;
-                if (useProxy !== null) GITHUB_CONFIG.useProxy = useProxy === 'true';
+                
+                // 对于静态网站，强制使用直传模式
+                if (useProxy !== null) {
+                    GITHUB_CONFIG.useProxy = useProxy === 'true';
+                } else {
+                    // 如果没有设置过，默认使用直传模式
+                    GITHUB_CONFIG.useProxy = false;
+                    localStorage.setItem('gh_useProxy', 'false');
+                }
+                
                 if (proxyEndpoint) GITHUB_CONFIG.proxyEndpoint = proxyEndpoint;
+                
                 // 回填表单
                 const $ = (id) => document.getElementById(id);
                 if ($('ghOwner')) $('ghOwner').value = GITHUB_CONFIG.owner || '';
@@ -1273,17 +1280,11 @@
                 }
 
                 // 将文件转换为base64
-                console.log(`开始转换文件为base64: ${fileName}`);
                 const base64 = await fileToBase64(file);
                 const content = base64.split(',')[1]; // 移除 data:*;base64, 前缀
-                console.log(`base64转换完成，内容长度: ${content.length}`);
-
-                console.log(`开始上传文件: ${fileName}, 大小: ${formatFileSize(file.size)}, 设备: ${isMobile ? '移动端' : '桌面端'}`);
 
                 // 智能选择上传模式：优先检测代理，失败则使用直传
                 if (GITHUB_CONFIG.useProxy && GITHUB_CONFIG.proxyEndpoint) {
-                    console.log('尝试代理模式上传...');
-                    
                     try {
                         const requestBody = {
                             owner: GITHUB_CONFIG.owner,
@@ -1303,12 +1304,9 @@
                             body: JSON.stringify(requestBody)
                         });
                         
-                        console.log(`代理响应状态: ${proxyRes.status}`);
-                        
                         if (proxyRes.ok) {
                             const data = await proxyRes.json();
                             if (data.success) {
-                                console.log('代理上传成功');
                                 return data;
                             } else {
                                 throw new Error(data.error || 'Proxy返回失败');
@@ -1324,9 +1322,7 @@
                 }
 
                 // 直传（前端持有 Token）
-                console.log('使用直传模式上传...');
                 const url = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${folderPath}/${fileName}`;
-                console.log('GitHub API URL:', url);
                 
                 const requestHeaders = {
                     'Authorization': `token ${GITHUB_CONFIG.token}`,
@@ -1343,26 +1339,18 @@
                     branch: GITHUB_CONFIG.branch
                 };
                 
-                console.log('发送请求到GitHub API...');
-                
                 // 移动端使用XMLHttpRequest，桌面端使用Fetch
                 if (isMobile) {
-                    console.log('移动端：使用XMLHttpRequest上传');
                     return await uploadWithXHR(url, requestHeaders, requestPayload, startTime);
                 } else {
-                    console.log('桌面端：使用Fetch API上传');
                     const response = await fetch(url, {
                         method: 'PUT',
                         headers: requestHeaders,
                         body: JSON.stringify(requestPayload)
                     });
                     
-                    const duration = Date.now() - startTime;
-                    console.log(`GitHub API响应状态: ${response.status}, 用时: ${duration}ms`);
-                    
                     if (response.ok) {
                         const result = await response.json();
-                        console.log('GitHub直传成功');
                         return { 
                             success: true, 
                             url: `https://cdn.jsdelivr.net/gh/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}@${GITHUB_CONFIG.branch}/${folderPath}/${fileName}`, 
@@ -1376,7 +1364,6 @@
                         } catch {
                             errorData = { message: errorText };
                         }
-                        console.error('GitHub API错误详情:', errorData);
                         throw new Error(`GitHub API错误 ${response.status}: ${errorData.message || '未知错误'}`);
                     }
                 }
@@ -1419,13 +1406,9 @@
                     
                     xhr.onreadystatechange = function() {
                         if (xhr.readyState === 4) {
-                            const duration = Date.now() - startTime;
-                            console.log(`XHR响应状态: ${xhr.status}, 用时: ${duration}ms`);
-                            
                             if (xhr.status >= 200 && xhr.status < 300) {
                                 try {
                                     const result = JSON.parse(xhr.responseText);
-                                    console.log('XHR上传成功');
                                     
                                     // 从URL中提取文件路径
                                     const urlParts = url.split('/contents/');
@@ -1437,7 +1420,6 @@
                                         downloadUrl: result.content.download_url
                                     });
                                 } catch (parseError) {
-                                    console.error('XHR响应解析错误:', parseError);
                                     reject(new Error(`响应解析失败: ${parseError.message}`));
                                 }
                             } else {
@@ -1447,24 +1429,20 @@
                                 } catch {
                                     errorData = { message: xhr.responseText || 'Unknown error' };
                                 }
-                                console.error('XHR错误详情:', errorData);
                                 reject(new Error(`XHR错误 ${xhr.status}: ${errorData.message || '未知错误'}`));
                             }
                         }
                     };
                     
                     xhr.onerror = function() {
-                        console.error('XHR网络错误');
                         reject(new Error('网络连接失败，请检查网络设置'));
                     };
                     
                     xhr.ontimeout = function() {
-                        console.error('XHR请求超时');
                         reject(new Error('请求超时，请重试'));
                     };
                     
                     xhr.onabort = function() {
-                        console.error('XHR请求被中断');
                         reject(new Error('请求被中断'));
                     };
                     
@@ -1478,7 +1456,6 @@
                         xhr.setRequestHeader(key, headers[key]);
                     });
                     
-                    console.log('XHR发送请求...');
                     xhr.send(JSON.stringify(payload));
                     
                 } catch (error) {
@@ -1501,21 +1478,17 @@
                                 reject(new Error('FileReader返回空结果'));
                                 return;
                             }
-                            console.log(`文件 ${file.name} base64转换成功，大小: ${result.length}`);
                             resolve(result);
                         } catch (error) {
-                            console.error('FileReader onload错误:', error);
                             reject(new Error(`FileReader处理结果失败: ${error.message}`));
                         }
                     };
                     
                     reader.onerror = function(error) {
-                        console.error('FileReader读取错误:', error);
                         reject(new Error(`文件读取失败: ${error.message || '未知错误'}`));
                     };
                     
                     reader.onabort = function() {
-                        console.error('FileReader被中断');
                         reject(new Error('文件读取被中断'));
                     };
                     
@@ -1526,7 +1499,6 @@
                         return;
                     }
                     
-                    console.log(`开始读取文件: ${file.name}, 大小: ${formatFileSize(file.size)}, 设备: ${isMobile ? '移动端' : '桌面端'}`);
                     reader.readAsDataURL(file);
                     
                 } catch (error) {
@@ -1538,103 +1510,65 @@
 
         // 上传（支持多匹配弹窗选择）
         async function uploadFiles() {
-            const isMobile = isMobileDevice();
-            console.log(`🔍 开始上传流程 - 设备类型: ${isMobile ? '移动端' : '桌面端'}`);
-            
             const lpSuffix = document.getElementById('lpSuffix').value.trim();
             const fileInput = document.getElementById('fileInput');
             const files = fileInput.files;
 
-            console.log(`🔍 上传参数检查:`);
-            console.log(`- LP后缀: "${lpSuffix}"`);
-            console.log(`- 文件数量: ${files.length}`);
-            console.log(`- 数据库大小: ${databaseData.size}`);
-
             // 验证输入
             if (!lpSuffix || lpSuffix.length !== 4 || !/^\d{4}$/.test(lpSuffix)) {
-                console.error('❌ LP号后缀验证失败');
                 showStatus('uploadStatus', '请输入有效的4位数字LP号后缀', 'error');
                 return;
             }
             if (files.length === 0) {
-                console.error('❌ 没有选择文件');
                 showStatus('uploadStatus', '请选择要上传的文件', 'error');
                 return;
             }
             if (databaseData.size === 0) {
-                console.error('❌ 数据库为空');
                 showStatus('uploadStatus', '请先导入数据库', 'error');
                 return;
             }
 
             const usingProxy = GITHUB_CONFIG.useProxy && !!GITHUB_CONFIG.proxyEndpoint;
-            console.log(`🔍 GitHub配置检查:`);
-            console.log(`- Owner: "${GITHUB_CONFIG.owner}"`);
-            console.log(`- Repo: "${GITHUB_CONFIG.repo}"`);
-            console.log(`- Branch: "${GITHUB_CONFIG.branch}"`);
-            console.log(`- Token: ${GITHUB_CONFIG.token ? '已设置' : '未设置'}`);
-            console.log(`- 使用代理: ${usingProxy}`);
             
             // 检查GitHub配置（代理模式下无需前端 token）
             if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo || !GITHUB_CONFIG.branch ||
                 (!usingProxy && (!GITHUB_CONFIG.token || GITHUB_CONFIG.token === 'your-token')) ||
                 GITHUB_CONFIG.owner === 'your-username' || GITHUB_CONFIG.repo === 'your-repo') {
-                console.error('❌ GitHub配置不完整');
                 showStatus('uploadStatus', '⚠️ 请先配置 GitHub 存储信息（见使用说明）', 'error');
                 return;
             }
 
-            console.log('✅ 所有验证通过，继续执行上传流程...');
-
             // 匹配 LP
-            console.log('🔍 开始LP号匹配...');
             const matches = [];
             for (const [lpNumber, contract] of databaseData) {
                 if (String(lpNumber).endsWith(lpSuffix)) {
                     matches.push({ lp: lpNumber, contract: contract });
                 }
             }
-            console.log(`🔍 LP匹配结果: ${matches.length} 条`);
-            matches.forEach((match, index) => {
-                console.log(`  ${index + 1}. LP-${match.lp} → ${match.contract}`);
-            });
 
             pendingUploadContext = { files: Array.from(files), lpSuffix };
-            console.log('🔍 已设置上传上下文');
 
             if (matches.length === 0) {
-                console.log('🔍 无LP匹配，使用后四位创建文件夹');
                 // 无匹配，按后四位创建文件夹
                 proceedUploadWithSelection(null, null);
                 return;
             }
             if (matches.length === 1) {
-                console.log('🔍 唯一LP匹配，直接使用');
                 // 唯一匹配，直接使用
                 proceedUploadWithSelection(matches[0].lp, matches[0].contract);
                 return;
             }
 
-            console.log('🔍 多条LP匹配，显示选择弹窗');
             // 多条匹配，弹出选择
             showLpSelection(matches);
         }
 
         function proceedUploadWithSelection(chosenLpNumber, chosenContractNumber) {
-            console.log('🔍 开始执行选择后的上传流程');
-            console.log(`- 选择的LP号: ${chosenLpNumber || '无'}`);
-            console.log(`- 选择的履约单号: ${chosenContractNumber || '无'}`);
-            
             const ctx = pendingUploadContext;
-            if (!ctx) {
-                console.error('❌ 上传上下文丢失');
-                return;
-            }
-            console.log('✅ 上传上下文正常');
+            if (!ctx) return;
 
             const lpSuffix = ctx.lpSuffix;
             const files = ctx.files;
-            console.log(`🔍 上传参数: LP后缀=${lpSuffix}, 文件数=${files.length}`);
 
             const today = new Date();
             const dateStr = today.getFullYear() +
@@ -1645,15 +1579,12 @@
                 `${dateStr}_${chosenContractNumber}` :
                 `${dateStr}_${lpSuffix}`;
 
-            console.log(`🔍 创建文件夹: ${folderName}`);
             showStatus('uploadStatus', `正在上传到GitHub: ${folderName}` , 'info');
             showUploadProgress(0);
 
-            console.log('🔍 调用uploadFilesToGitHub函数...');
             uploadFilesToGitHub(files, folderName, chosenLpNumber || lpSuffix, chosenContractNumber);
 
             pendingUploadContext = null;
-            console.log('🔍 清理上传上下文');
         }
 
         function showLpSelection(matches) {
@@ -2435,340 +2366,11 @@
             }
         }
 
-        // 移动端诊断功能
-        async function runMobileDiagnostics() {
-            const statusElement = document.getElementById('githubConfigStatus');
-            statusElement.innerHTML = '🔍 正在运行移动端诊断...';
-            statusElement.className = 'alert alert-info';
 
-            const isMobile = isMobileDevice();
-            const networkInfo = getNetworkInfo();
-            
-            let diagnosticReport = `
-                <div><strong>📱 设备信息:</strong></div>
-                <div>• 设备类型: ${isMobile ? '移动设备' : '桌面设备'}</div>
-                <div>• 用户代理: ${navigator.userAgent}</div>
-                <div>• 在线状态: ${networkInfo.online ? '在线' : '离线'}</div>
-                <div>• 网络类型: ${networkInfo.effectiveType}</div>
-                <div>• 下行速度: ${networkInfo.downlink}Mbps</div>
-                <div>• 延迟: ${networkInfo.rtt}ms</div>
-                <br>
-            `;
 
-            // 测试GitHub API连接
-            try {
-                diagnosticReport += `<div><strong>🌐 网络连接测试:</strong></div>`;
-                
-                // 测试基础网络
-                const startTime = Date.now();
-                const testResponse = await fetch('https://api.github.com', {
-                    method: 'GET',
-                    headers: {
-                        'User-Agent': isMobile ? 'Mobile-FileUploader' : 'Desktop-FileUploader'
-                    }
-                });
-                const duration = Date.now() - startTime;
-                
-                diagnosticReport += `<div>• GitHub API访问: ${testResponse.ok ? '✅ 成功' : '❌ 失败'} (${duration}ms)</div>`;
-                
-                // 测试仓库访问
-                if (GITHUB_CONFIG.token && GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
-                    const repoUrl = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}`;
-                    const repoStartTime = Date.now();
-                    const repoResponse = await fetch(repoUrl, {
-                        headers: {
-                            'Authorization': `token ${GITHUB_CONFIG.token}`,
-                            'User-Agent': isMobile ? 'Mobile-FileUploader' : 'Desktop-FileUploader'
-                        }
-                    });
-                    const repoDuration = Date.now() - repoStartTime;
-                    
-                    diagnosticReport += `<div>• 仓库访问: ${repoResponse.ok ? '✅ 成功' : '❌ 失败'} (${repoDuration}ms)</div>`;
-                    
-                    if (!repoResponse.ok) {
-                        const errorText = await repoResponse.text();
-                        diagnosticReport += `<div>• 错误详情: ${errorText}</div>`;
-                    }
-                } else {
-                    diagnosticReport += `<div>• 仓库访问: ⚠️ 配置不完整</div>`;
-                }
-                
-                diagnosticReport += `<br>`;
-                
-            } catch (error) {
-                diagnosticReport += `<div>• 网络连接: ❌ 失败 - ${error.message}</div><br>`;
-            }
 
-            // 浏览器兼容性检查
-            diagnosticReport += `
-                <div><strong>🔧 浏览器兼容性:</strong></div>
-                <div>• Fetch API: ${typeof fetch !== 'undefined' ? '✅ 支持' : '❌ 不支持'}</div>
-                <div>• FileReader API: ${typeof FileReader !== 'undefined' ? '✅ 支持' : '❌ 不支持'}</div>
-                <div>• localStorage: ${typeof localStorage !== 'undefined' ? '✅ 支持' : '❌ 不支持'}</div>
-                <div>• Blob支持: ${typeof Blob !== 'undefined' ? '✅ 支持' : '❌ 不支持'}</div>
-                <br>
-            `;
 
-            // 移动端特殊建议
-            if (isMobile) {
-                diagnosticReport += `
-                    <div><strong>📱 移动端建议:</strong></div>
-                    <div>• 建议使用WiFi网络上传文件</div>
-                    <div>• 单个文件建议不超过50MB</div>
-                    <div>• 避免在后台运行时上传</div>
-                    <div>• 保持浏览器在前台运行</div>
-                    ${networkInfo.effectiveType === 'slow-2g' || networkInfo.effectiveType === '2g' ? 
-                        '<div style="color: #dc3545;">⚠️ 当前网络较慢，建议切换到更快的网络</div>' : ''}
-                `;
-            }
 
-            statusElement.innerHTML = diagnosticReport;
-            statusElement.className = 'alert alert-info';
-        }
-
-        // 移动端上传测试
-        async function testMobileUpload() {
-            const statusElement = document.getElementById('githubConfigStatus');
-            const isMobile = isMobileDevice();
-            
-            if (!isMobile) {
-                statusElement.innerHTML = '❌ 此功能仅在移动设备上可用';
-                statusElement.className = 'alert alert-error';
-                return;
-            }
-
-            statusElement.innerHTML = '🧪 开始移动端上传测试...';
-            statusElement.className = 'alert alert-info';
-
-            let testReport = `<div><strong>📱 移动端上传测试报告</strong></div><br>`;
-
-            try {
-                // 测试1: 创建测试文件
-                testReport += `<div><strong>测试1: 创建测试文件</strong></div>`;
-                const testBlob = new Blob(['这是一个移动端测试文件，用于验证上传功能'], { type: 'text/plain' });
-                const testFile = new File([testBlob], 'mobile-test.txt', { type: 'text/plain' });
-                testReport += `<div>✅ 测试文件创建成功 (${formatFileSize(testFile.size)})</div><br>`;
-
-                // 测试2: FileReader API
-                testReport += `<div><strong>测试2: FileReader API</strong></div>`;
-                try {
-                    const base64Result = await fileToBase64(testFile);
-                    testReport += `<div>✅ FileReader转换成功 (base64长度: ${base64Result.length})</div><br>`;
-                } catch (error) {
-                    testReport += `<div>❌ FileReader转换失败: ${error.message}</div><br>`;
-                    statusElement.innerHTML = testReport;
-                    statusElement.className = 'alert alert-error';
-                    return;
-                }
-
-                // 测试3: GitHub API连接
-                testReport += `<div><strong>测试3: GitHub API连接</strong></div>`;
-                if (!GITHUB_CONFIG.token || !GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo) {
-                    testReport += `<div>❌ GitHub配置不完整，跳过API测试</div><br>`;
-                } else {
-                    try {
-                        const testUrl = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}`;
-                        const testXHR = new XMLHttpRequest();
-                        
-                        const apiTestResult = await new Promise((resolve, reject) => {
-                            testXHR.onreadystatechange = function() {
-                                if (testXHR.readyState === 4) {
-                                    if (testXHR.status >= 200 && testXHR.status < 300) {
-                                        resolve('成功');
-                                    } else {
-                                        reject(new Error(`状态码: ${testXHR.status}`));
-                                    }
-                                }
-                            };
-                            testXHR.onerror = () => reject(new Error('网络错误'));
-                            testXHR.ontimeout = () => reject(new Error('超时'));
-                            testXHR.timeout = 10000;
-                            testXHR.open('GET', testUrl, true);
-                            testXHR.setRequestHeader('Authorization', `token ${GITHUB_CONFIG.token}`);
-                            testXHR.send();
-                        });
-                        
-                        testReport += `<div>✅ GitHub API连接测试: ${apiTestResult}</div><br>`;
-                    } catch (error) {
-                        testReport += `<div>❌ GitHub API连接失败: ${error.message}</div><br>`;
-                        statusElement.innerHTML = testReport;
-                        statusElement.className = 'alert alert-error';
-                        return;
-                    }
-                }
-
-                // 测试4: XMLHttpRequest vs Fetch
-                testReport += `<div><strong>测试4: 网络请求方法兼容性</strong></div>`;
-                testReport += `<div>• XMLHttpRequest: ${typeof XMLHttpRequest !== 'undefined' ? '✅ 支持' : '❌ 不支持'}</div>`;
-                testReport += `<div>• Fetch API: ${typeof fetch !== 'undefined' ? '✅ 支持' : '❌ 不支持'}</div>`;
-                testReport += `<div>• 移动端将使用: XMLHttpRequest</div><br>`;
-
-                // 测试5: 内存和性能检查
-                testReport += `<div><strong>测试5: 设备性能检查</strong></div>`;
-                const memoryInfo = performance.memory || {};
-                testReport += `<div>• 可用内存: ${memoryInfo.totalJSHeapSize ? formatFileSize(memoryInfo.totalJSHeapSize) : '未知'}</div>`;
-                testReport += `<div>• 已用内存: ${memoryInfo.usedJSHeapSize ? formatFileSize(memoryInfo.usedJSHeapSize) : '未知'}</div>`;
-                testReport += `<div>• 内存限制: ${memoryInfo.jsHeapSizeLimit ? formatFileSize(memoryInfo.jsHeapSizeLimit) : '未知'}</div><br>`;
-
-                testReport += `<div style="color: #28a745;"><strong>🎉 所有测试通过！移动端上传功能应该可以正常工作</strong></div>`;
-                testReport += `<div style="margin-top: 10px;"><small>如果实际上传仍然失败，请提供浏览器控制台的详细错误信息</small></div>`;
-                
-                statusElement.innerHTML = testReport;
-                statusElement.className = 'alert alert-success';
-
-            } catch (error) {
-                testReport += `<div>❌ 测试过程中发生错误: ${error.message}</div>`;
-                testReport += `<div style="margin-top: 10px;"><strong>建议:</strong> 请截图此报告并联系技术支持</div>`;
-                statusElement.innerHTML = testReport;
-                statusElement.className = 'alert alert-error';
-                console.error('移动端测试失败:', error);
-            }
-        }
-
-        // 真实上传调试功能
-        async function debugRealUpload() {
-            const statusElement = document.getElementById('githubConfigStatus');
-            const isMobile = isMobileDevice();
-            
-            if (!isMobile) {
-                statusElement.innerHTML = '❌ 此功能仅在移动设备上可用';
-                statusElement.className = 'alert alert-error';
-                return;
-            }
-
-            statusElement.innerHTML = '🔍 开始真实上传流程调试...';
-            statusElement.className = 'alert alert-info';
-
-            let debugReport = `<div><strong>🔍 真实上传调试报告</strong></div><br>`;
-
-            try {
-                // 步骤1: 检查数据库
-                debugReport += `<div><strong>步骤1: 检查数据库状态</strong></div>`;
-                debugReport += `<div>• 数据库记录数: ${databaseData.size}</div>`;
-                if (databaseData.size === 0) {
-                    debugReport += `<div style="color: #dc3545;">⚠️ 数据库为空，这可能影响LP号匹配</div>`;
-                }
-                debugReport += `<br>`;
-
-                // 步骤2: 模拟LP号验证
-                debugReport += `<div><strong>步骤2: LP号验证测试</strong></div>`;
-                const testLpSuffix = '1234';
-                debugReport += `<div>• 测试LP号后缀: ${testLpSuffix}</div>`;
-                
-                const matches = [];
-                for (const [lpNumber, contract] of databaseData) {
-                    if (String(lpNumber).endsWith(testLpSuffix)) {
-                        matches.push({ lp: lpNumber, contract: contract });
-                    }
-                }
-                debugReport += `<div>• 匹配结果: ${matches.length} 条</div>`;
-                if (matches.length > 0) {
-                    debugReport += `<div>• 第一个匹配: LP-${matches[0].lp} → ${matches[0].contract}</div>`;
-                }
-                debugReport += `<br>`;
-
-                // 步骤3: 创建真实测试文件
-                debugReport += `<div><strong>步骤3: 创建真实测试文件</strong></div>`;
-                const testCanvas = document.createElement('canvas');
-                testCanvas.width = 100;
-                testCanvas.height = 100;
-                const ctx = testCanvas.getContext('2d');
-                ctx.fillStyle = '#667eea';
-                ctx.fillRect(0, 0, 100, 100);
-                ctx.fillStyle = '#ffffff';
-                ctx.font = '20px Arial';
-                ctx.fillText('Test', 25, 55);
-                
-                // 转换为Blob
-                const testBlob = await new Promise(resolve => {
-                    testCanvas.toBlob(resolve, 'image/png');
-                });
-                const testFile = new File([testBlob], 'debug_test.png', { type: 'image/png' });
-                debugReport += `<div>• 测试图片文件: ${testFile.name} (${formatFileSize(testFile.size)})</div><br>`;
-
-                // 步骤4: 文件名清理测试
-                debugReport += `<div><strong>步骤4: 文件名清理测试</strong></div>`;
-                const originalName = testFile.name;
-                const cleanName = originalName
-                    .replace(/[^a-zA-Z0-9.\-_\u4e00-\u9fa5]/g, '_')
-                    .replace(/\s+/g, '_')
-                    .replace(/_{2,}/g, '_');
-                const fileName = `${Date.now()}_${cleanName}`;
-                debugReport += `<div>• 原始文件名: ${originalName}</div>`;
-                debugReport += `<div>• 清理后文件名: ${fileName}</div><br>`;
-
-                // 步骤5: FileReader测试
-                debugReport += `<div><strong>步骤5: FileReader真实转换</strong></div>`;
-                try {
-                    const base64 = await fileToBase64(testFile);
-                    const content = base64.split(',')[1];
-                    debugReport += `<div>• Base64转换: ✅ 成功 (${content.length} 字符)</div>`;
-                    debugReport += `<div>• Content预览: ${content.substring(0, 50)}...</div><br>`;
-
-                    // 步骤6: 构建上传参数
-                    debugReport += `<div><strong>步骤6: 构建上传参数</strong></div>`;
-                    const folderName = `${new Date().toISOString().slice(0,10).replace(/-/g, '')}_${testLpSuffix}`;
-                    debugReport += `<div>• 文件夹名: ${folderName}</div>`;
-                    debugReport += `<div>• 文件路径: ${folderName}/${fileName}</div>`;
-                    debugReport += `<div>• GitHub配置检查:</div>`;
-                    debugReport += `<div>&nbsp;&nbsp;- Owner: ${GITHUB_CONFIG.owner}</div>`;
-                    debugReport += `<div>&nbsp;&nbsp;- Repo: ${GITHUB_CONFIG.repo}</div>`;
-                    debugReport += `<div>&nbsp;&nbsp;- Branch: ${GITHUB_CONFIG.branch}</div>`;
-                    debugReport += `<div>&nbsp;&nbsp;- Token: ${GITHUB_CONFIG.token ? '已设置 (' + GITHUB_CONFIG.token.length + ' 字符)' : '❌ 未设置'}</div><br>`;
-
-                    // 步骤7: 实际上传测试
-                    if (GITHUB_CONFIG.token && GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
-                        debugReport += `<div><strong>步骤7: 执行真实上传</strong></div>`;
-                        statusElement.innerHTML = debugReport + `<div>⏳ 正在执行真实上传测试...</div>`;
-                        statusElement.className = 'alert alert-info';
-
-                        try {
-                            const uploadResult = await uploadToGitHub(testFile, folderName, fileName);
-                            if (uploadResult.success) {
-                                debugReport += `<div>✅ 上传成功！</div>`;
-                                debugReport += `<div>• CDN URL: ${uploadResult.url}</div>`;
-                                debugReport += `<div>• Download URL: ${uploadResult.downloadUrl}</div>`;
-                                debugReport += `<br><div style="color: #28a745;"><strong>🎉 真实上传测试成功！移动端上传功能正常</strong></div>`;
-                                statusElement.className = 'alert alert-success';
-                            } else {
-                                debugReport += `<div>❌ 上传失败: ${uploadResult.error}</div>`;
-                                debugReport += `<div><strong>失败原因分析:</strong></div>`;
-                                if (uploadResult.error.includes('403')) {
-                                    debugReport += `<div>• 权限问题：检查Token权限</div>`;
-                                } else if (uploadResult.error.includes('404')) {
-                                    debugReport += `<div>• 仓库问题：检查仓库名称和访问权限</div>`;
-                                } else if (uploadResult.error.includes('network') || uploadResult.error.includes('Failed to fetch')) {
-                                    debugReport += `<div>• 网络问题：建议切换网络</div>`;
-                                } else {
-                                    debugReport += `<div>• 其他问题：${uploadResult.error}</div>`;
-                                }
-                                statusElement.className = 'alert alert-error';
-                            }
-                        } catch (uploadError) {
-                            debugReport += `<div>❌ 上传异常: ${uploadError.message}</div>`;
-                            debugReport += `<div>• 详细错误: ${uploadError.stack || '无详细信息'}</div>`;
-                            statusElement.className = 'alert alert-error';
-                        }
-                    } else {
-                        debugReport += `<div><strong>步骤7: 跳过真实上传</strong></div>`;
-                        debugReport += `<div>❌ GitHub配置不完整，无法执行真实上传测试</div>`;
-                        statusElement.className = 'alert alert-error';
-                    }
-
-                } catch (readerError) {
-                    debugReport += `<div>❌ FileReader转换失败: ${readerError.message}</div>`;
-                    statusElement.className = 'alert alert-error';
-                }
-
-            } catch (error) {
-                debugReport += `<div>❌ 调试过程中发生错误: ${error.message}</div>`;
-                debugReport += `<div>• 错误堆栈: ${error.stack || '无详细信息'}</div>`;
-                statusElement.className = 'alert alert-error';
-                console.error('真实上传调试失败:', error);
-            }
-
-            statusElement.innerHTML = debugReport;
-        }
 
         // 切换上传模式
         function toggleUploadMode() {
@@ -2791,13 +2393,13 @@
                 statusElement.className = 'alert alert-success';
             }
             
-            console.log(`上传模式已切换为: ${GITHUB_CONFIG.useProxy ? '代理模式' : '直传模式'}`);
-            
             // 1秒后重新检查配置
             setTimeout(() => {
                 checkGitHubConfig();
             }, 1000);
         }
+
+
     </script>
 </body>
 </html>
