@@ -574,6 +574,12 @@
                     <div style="text-align: center; margin-top: 20px;">
                         <button onclick="deleteDatabase()" class="btn btn-danger">🗑️ 删除数据库</button>
                         <button onclick="downloadDatabase()" class="btn btn-secondary">📥 导出数据库</button>
+                        <button onclick="toggleDatabasePreview()" id="databasePreviewBtn" class="btn btn-secondary">👁️ 预览数据库</button>
+                    </div>
+
+                    <div id="databasePreview" style="display: none; margin-top: 15px;">
+                        <div id="databasePreviewSummary" style="color: #718096; margin-bottom: 8px;"></div>
+                        <div id="databasePreviewTable" class="file-list" style="max-height: 300px;"></div>
                     </div>
                 </div>
 
@@ -982,6 +988,11 @@
                 } else {
                     importDate.textContent = '未知';
                 }
+                // 更新预览（若已展开）
+                const preview = document.getElementById('databasePreview');
+                if (preview && preview.style.display !== 'none') {
+                    renderDatabasePreview();
+                }
             } else {
                 databaseInfo.style.display = 'none';
             }
@@ -1031,6 +1042,50 @@
                 showStatus('databaseStatus', '✅ 数据库导出成功', 'success');
             } catch (error) {
                 showStatus('databaseStatus', `❌ 导出失败：${error.message}`, 'error');
+            }
+        }
+
+        function toggleDatabasePreview() {
+            const preview = document.getElementById('databasePreview');
+            const btn = document.getElementById('databasePreviewBtn');
+            if (!preview || !btn) return;
+            const willShow = preview.style.display === 'none';
+            preview.style.display = willShow ? 'block' : 'none';
+            btn.textContent = willShow ? '🙈 隐藏预览' : '👁️ 预览数据库';
+            if (willShow) {
+                renderDatabasePreview();
+            }
+        }
+
+        function renderDatabasePreview() {
+            try {
+                const container = document.getElementById('databasePreviewTable');
+                const summary = document.getElementById('databasePreviewSummary');
+                if (!container || !summary) return;
+
+                const rows = Array.from(databaseData.entries()).map(([lp, contract]) => ({ lp, contract }));
+                const maxShow = 200; // 最多展示200行
+                const showRows = rows.slice(0, maxShow);
+                summary.textContent = `共 ${rows.length} 条，展示前 ${showRows.length} 条。`;
+
+                if (showRows.length === 0) {
+                    container.innerHTML = '<div style="text-align:center; padding: 20px; color:#718096;">暂无数据</div>';
+                    return;
+                }
+
+                const header = `
+                    <div class="file-item" style="font-weight:600;">
+                        <div class="file-info"><div class="file-name">LP号</div></div>
+                        <div class="file-actions" style="min-width:200px; justify-content:flex-start; color:#4a5568;">履约单号</div>
+                    </div>`;
+                const body = showRows.map(r => `
+                    <div class="file-item">
+                        <div class="file-info"><div class="file-name">${r.lp}</div></div>
+                        <div class="file-actions" style="min-width:200px; justify-content:flex-start; color:#4a5568;">${r.contract}</div>
+                    </div>`).join('');
+                container.innerHTML = header + body;
+            } catch (e) {
+                console.warn('渲染数据库预览失败:', e);
             }
         }
 
@@ -1536,7 +1591,8 @@
 
             if (manageView.level === 'root') {
                 const dates = Array.from(grouped.dates.keys()).sort((a, b) => b.localeCompare(a));
-                fileList.innerHTML = breadcrumb + dates.map(date => {
+                const backBtn = '';
+                fileList.innerHTML = breadcrumb + backBtn + dates.map(date => {
                     const stats = grouped.dates.get(date);
                     return `
                         <div class="file-item" style="cursor: pointer;" onclick="setManageLevel('date', {date: '${date}'})">
@@ -1556,7 +1612,8 @@
             if (manageView.level === 'date') {
                 const date = manageView.selectedDate;
                 const folders = Array.from(grouped.foldersByDate.get(date) || []).sort((a, b) => b.localeCompare(a));
-                fileList.innerHTML = breadcrumb + folders.map(folder => {
+                const backBtn = `<div style="padding: 10px 15px;"><button class="btn btn-small btn-secondary" onclick="setManageLevel('root')">⬅️ 返回上一级</button></div>`;
+                fileList.innerHTML = breadcrumb + backBtn + folders.map(folder => {
                     const files = grouped.filesByFolder.get(folder) || [];
                     return `
                         <div class="file-item" style="cursor: pointer;" onclick="setManageLevel('folder', {date: '${date}', folder: '${folder}'})">
@@ -1576,6 +1633,7 @@
             if (manageView.level === 'folder') {
                 const folder = manageView.selectedFolder;
                 const files = grouped.filesByFolder.get(folder) || [];
+                const backBtn = `<div style="padding: 10px 15px;"><button class="btn btn-small btn-secondary" onclick="setManageLevel('date', {date: '${manageView.selectedDate}'})">⬅️ 返回上一级</button></div>`;
                 const items = files.map(({ key, file }) => `
                     <div class="file-item">
                         <div class="file-info">
@@ -1595,7 +1653,7 @@
                     </div>
                 `).join('');
 
-                fileList.innerHTML = breadcrumb + (items || '');
+                fileList.innerHTML = breadcrumb + backBtn + (items || '');
             }
         }
 
