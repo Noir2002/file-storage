@@ -1479,36 +1479,169 @@
             displayFileList();
         }
 
+        // 管理页面分级视图状态
+        let manageView = { level: 'root', selectedDate: null, selectedFolder: null };
+
+        function setManageLevel(level, payload) {
+            if (level === 'root') {
+                manageView = { level: 'root', selectedDate: null, selectedFolder: null };
+            } else if (level === 'date') {
+                manageView = { level: 'date', selectedDate: payload.date, selectedFolder: null };
+            } else if (level === 'folder') {
+                manageView = { level: 'folder', selectedDate: payload.date, selectedFolder: payload.folder };
+            }
+            renderManageView();
+        }
+
+        function normalizeAndCleanupFiles() {
+            try {
+                const entries = Array.from(uploadedFiles.entries());
+                let changed = false;
+                for (const [key, value] of entries) {
+                    if (!value || typeof value !== 'object') {
+                        uploadedFiles.delete(key);
+                        changed = true;
+                        continue;
+                    }
+                    // 修正可能缺失的字段，避免界面显示 undefined
+                    if (!value.name) { value.name = value.fileName || '(未命名)'; changed = true; }
+                    if (!value.folder) { value.folder = 'unknown'; changed = true; }
+                }
+                if (changed) {
+                    // 持久化修正后的数据
+                    saveFilesToLocal();
+                    saveFilesRegistryToGitHub().catch(err => console.warn('清理后同步失败:', err.message));
+                }
+            } catch (e) {
+                console.warn('清理文件记录失败:', e);
+            }
+        }
+
         function displayFileList() {
+            normalizeAndCleanupFiles();
+            renderManageView();
+        }
+
+        function renderManageView() {
             const fileList = document.getElementById('fileList');
-            
             if (uploadedFiles.size === 0) {
                 fileList.innerHTML = '<div style="text-align: center; padding: 40px; color: #718096;">暂无文件，请先上传文件</div>';
                 return;
             }
 
-            const fileArray = Array.from(uploadedFiles.values()).sort((a, b) => 
-                new Date(b.uploadTime) - new Date(a.uploadTime)
-            );
+            const grouped = buildGroupedData();
 
-            fileList.innerHTML = fileArray.map(file => `
-                <div class="file-item">
-                    <div class="file-info">
-                        <div class="file-name">${file.name}</div>
-                        <div class="file-details">
-                            文件夹: ${file.folder} | 大小: ${formatFileSize(file.size)} | 
-                            上传时间: ${new Date(file.uploadTime).toLocaleString('zh-CN')}
-                            ${file.lpNumber ? ` | LP: ${file.lpNumber}` : ''}
-                            ${file.contractNumber ? ` | 履约单: ${file.contractNumber}` : ''}
+            // 面包屑
+            const breadcrumb = buildBreadcrumb();
+
+            if (manageView.level === 'root') {
+                const dates = Array.from(grouped.dates.keys()).sort((a, b) => b.localeCompare(a));
+                fileList.innerHTML = breadcrumb + dates.map(date => {
+                    const stats = grouped.dates.get(date);
+                    return `
+                        <div class="file-item" style="cursor: pointer;" onclick="setManageLevel('date', {date: '${date}'})">
+                            <div class="file-info">
+                                <div class="file-name">📅 ${date}</div>
+                                <div class="file-details">文件夹: ${stats.folderCount} | 文件: ${stats.fileCount}</div>
+                            </div>
+                            <div class="file-actions">
+                                <button class="btn btn-small">进入</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                return;
+            }
+
+            if (manageView.level === 'date') {
+                const date = manageView.selectedDate;
+                const folders = Array.from(grouped.foldersByDate.get(date) || []).sort((a, b) => b.localeCompare(a));
+                fileList.innerHTML = breadcrumb + folders.map(folder => {
+                    const files = grouped.filesByFolder.get(folder) || [];
+                    return `
+                        <div class="file-item" style="cursor: pointer;" onclick="setManageLevel('folder', {date: '${date}', folder: '${folder}'})">
+                            <div class="file-info">
+                                <div class="file-name">📁 ${folder}</div>
+                                <div class="file-details">文件: ${files.length}</div>
+                            </div>
+                            <div class="file-actions">
+                                <button class="btn btn-small">进入</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                return;
+            }
+
+            if (manageView.level === 'folder') {
+                const folder = manageView.selectedFolder;
+                const files = grouped.filesByFolder.get(folder) || [];
+                const items = files.map(({ key, file }) => `
+                    <div class="file-item">
+                        <div class="file-info">
+                            <div class="file-name">${file.name || file.fileName || '(未命名)'}</div>
+                            <div class="file-details">
+                                文件夹: ${file.folder} | 大小: ${file.size ? formatFileSize(file.size) : '-'} | 
+                                上传时间: ${file.uploadTime ? new Date(file.uploadTime).toLocaleString('zh-CN') : '-'}
+                                ${file.lpNumber ? ` | LP: ${file.lpNumber}` : ''}
+                                ${file.contractNumber ? ` | 履约单: ${file.contractNumber}` : ''}
+                            </div>
+                        </div>
+                        <div class="file-actions">
+                            ${file.url ? `<a href="${file.url}" target="_blank" class="btn btn-small">📥 预览</a>` : ''}
+                            ${file.downloadUrl ? `<a href="${file.downloadUrl}" target="_blank" class="btn btn-small btn-secondary">⬇️ 下载</a>` : ''}
+                            <button onclick="deleteFile('${key}')" class="btn btn-small btn-danger">🗑️ 删除</button>
                         </div>
                     </div>
-                    <div class="file-actions">
-                        <a href="${file.url}" target="_blank" class="btn btn-small">📥 预览</a>
-                        <a href="${file.downloadUrl}" target="_blank" class="btn btn-small btn-secondary">⬇️ 下载</a>
-                        <button onclick="deleteFile('${file.fileName}')" class="btn btn-small btn-danger">🗑️ 删除</button>
-                    </div>
-                </div>
-            `).join('');
+                `).join('');
+
+                fileList.innerHTML = breadcrumb + (items || '');
+            }
+        }
+
+        function buildBreadcrumb() {
+            const parts = [];
+            parts.push(`<div style="padding: 10px 15px; color: #4a5568;">`);
+            parts.push(`<span style="cursor:pointer;" onclick="setManageLevel('root')">所有日期</span>`);
+            if (manageView.level !== 'root' && manageView.selectedDate) {
+                parts.push(` / <span style="cursor:pointer;" onclick="setManageLevel('date', {date: '${manageView.selectedDate}'})">${manageView.selectedDate}</span>`);
+            }
+            if (manageView.level === 'folder' && manageView.selectedFolder) {
+                parts.push(` / <span>${manageView.selectedFolder}</span>`);
+            }
+            parts.push(`</div>`);
+            return parts.join('');
+        }
+
+        function buildGroupedData() {
+            const entries = Array.from(uploadedFiles.entries());
+            // 先按时间排序（新→旧）
+            entries.sort((a, b) => new Date(b[1].uploadTime || 0) - new Date(a[1].uploadTime || 0));
+
+            const dates = new Map(); // date => {folderCount, fileCount}
+            const foldersByDate = new Map(); // date => Set(folder)
+            const filesByFolder = new Map(); // folder => [{key, file}]
+
+            for (const [key, file] of entries) {
+                const folder = file.folder || 'unknown';
+                const date = /^[0-9]{8}/.test(folder) ? folder.slice(0, 8) : 'unknown';
+
+                if (!dates.has(date)) dates.set(date, { folderCount: 0, fileCount: 0 });
+                const stat = dates.get(date);
+                stat.fileCount += 1;
+
+                if (!foldersByDate.has(date)) foldersByDate.set(date, new Set());
+                const set = foldersByDate.get(date);
+                if (!set.has(folder)) {
+                    set.add(folder);
+                    stat.folderCount += 1;
+                }
+
+                if (!filesByFolder.has(folder)) filesByFolder.set(folder, []);
+                filesByFolder.get(folder).push({ key, file });
+            }
+
+            return { dates, foldersByDate, filesByFolder };
         }
 
         function deleteFile(fileName) {
@@ -1531,38 +1664,55 @@
             }
 
             try {
-                showStatus('fileManageStatus', '正在生成导出文件...', 'info');
-                
+                showStatus('fileManageStatus', '正在打包所有文件...', 'info');
                 const zip = new JSZip();
-                const fileInfoList = [];
 
-                for (const [fileName, fileRecord] of uploadedFiles) {
-                    fileInfoList.push({
-                        原文件名: fileRecord.name,
-                        存储文件名: fileName,
-                        文件夹: fileRecord.folder,
-                        LP号: fileRecord.lpNumber || '',
-                        履约单号: fileRecord.contractNumber || '',
-                        文件大小: formatFileSize(fileRecord.size),
-                        CDN链接: fileRecord.url,
-                        下载链接: fileRecord.downloadUrl,
-                        上传时间: new Date(fileRecord.uploadTime).toLocaleString('zh-CN')
-                    });
+                // 分层：日期/文件夹
+                const grouped = buildGroupedData();
+                const dates = Array.from(grouped.foldersByDate.keys());
+
+                for (const date of dates) {
+                    const folderSet = grouped.foldersByDate.get(date) || new Set();
+                    for (const folder of folderSet) {
+                        const files = grouped.filesByFolder.get(folder) || [];
+                        for (const { file } of files) {
+                            if (!file.downloadUrl) continue;
+                            try {
+                                const resp = await fetch(file.downloadUrl);
+                                if (!resp.ok) throw new Error(`下载失败 ${resp.status}`);
+                                const blob = await resp.blob();
+                                // 路径: 日期/完整文件夹名/存储文件名
+                                const path = `${date}/${folder}/${file.fileName || ('file_' + Date.now())}`;
+                                zip.file(path, blob);
+                            } catch (e) {
+                                console.warn('拉取文件失败:', file.fileName, e.message);
+                            }
+                        }
+                    }
                 }
 
+                // 同时生成清单
+                const fileInfoList = Array.from(uploadedFiles.entries()).map(([key, file]) => ({
+                    原文件名: file.name,
+                    存储文件名: key,
+                    文件夹: file.folder,
+                    LP号: file.lpNumber || '',
+                    履约单号: file.contractNumber || '',
+                    文件大小: file.size ? formatFileSize(file.size) : '',
+                    CDN链接: file.url || '',
+                    下载链接: file.downloadUrl || '',
+                    上传时间: file.uploadTime ? new Date(file.uploadTime).toLocaleString('zh-CN') : ''
+                }));
                 const ws = XLSX.utils.json_to_sheet(fileInfoList);
                 const wb = XLSX.utils.book_new();
                 XLSX.utils.book_append_sheet(wb, ws, '文件列表');
-                
                 const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
                 zip.file('文件列表.xlsx', excelBuffer);
 
                 const zipBlob = await zip.generateAsync({ type: 'blob' });
-                const fileName = `files_export_${new Date().toISOString().slice(0, 10)}.zip`;
-                
-                saveAs(zipBlob, fileName);
-                showStatus('fileManageStatus', '✅ 文件列表导出成功', 'success');
-                
+                const outName = `files_export_${new Date().toISOString().slice(0, 10)}.zip`;
+                saveAs(zipBlob, outName);
+                showStatus('fileManageStatus', '✅ 导出完成', 'success');
             } catch (error) {
                 showStatus('fileManageStatus', `❌ 导出失败：${error.message}`, 'error');
             }
