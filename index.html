@@ -645,6 +645,7 @@
                 <button onclick="checkGitHubConfig()" class="btn">检查配置</button>
                 <button onclick="runMobileDiagnostics()" class="btn" style="background: linear-gradient(135deg, #17a2b8, #138496);">📱 移动端诊断</button>
                 <button onclick="testMobileUpload()" class="btn" style="background: linear-gradient(135deg, #28a745, #20c997);">🧪 测试移动端上传</button>
+                <button onclick="debugRealUpload()" class="btn" style="background: linear-gradient(135deg, #fd7e14, #e55353);">🔍 真实上传调试</button>
             </div>
 
             <div class="section">
@@ -1529,64 +1530,103 @@
 
         // 上传（支持多匹配弹窗选择）
         async function uploadFiles() {
+            const isMobile = isMobileDevice();
+            console.log(`🔍 开始上传流程 - 设备类型: ${isMobile ? '移动端' : '桌面端'}`);
+            
             const lpSuffix = document.getElementById('lpSuffix').value.trim();
             const fileInput = document.getElementById('fileInput');
             const files = fileInput.files;
 
+            console.log(`🔍 上传参数检查:`);
+            console.log(`- LP后缀: "${lpSuffix}"`);
+            console.log(`- 文件数量: ${files.length}`);
+            console.log(`- 数据库大小: ${databaseData.size}`);
+
             // 验证输入
             if (!lpSuffix || lpSuffix.length !== 4 || !/^\d{4}$/.test(lpSuffix)) {
+                console.error('❌ LP号后缀验证失败');
                 showStatus('uploadStatus', '请输入有效的4位数字LP号后缀', 'error');
                 return;
             }
             if (files.length === 0) {
+                console.error('❌ 没有选择文件');
                 showStatus('uploadStatus', '请选择要上传的文件', 'error');
                 return;
             }
             if (databaseData.size === 0) {
+                console.error('❌ 数据库为空');
                 showStatus('uploadStatus', '请先导入数据库', 'error');
                 return;
             }
 
             const usingProxy = GITHUB_CONFIG.useProxy && !!GITHUB_CONFIG.proxyEndpoint;
+            console.log(`🔍 GitHub配置检查:`);
+            console.log(`- Owner: "${GITHUB_CONFIG.owner}"`);
+            console.log(`- Repo: "${GITHUB_CONFIG.repo}"`);
+            console.log(`- Branch: "${GITHUB_CONFIG.branch}"`);
+            console.log(`- Token: ${GITHUB_CONFIG.token ? '已设置' : '未设置'}`);
+            console.log(`- 使用代理: ${usingProxy}`);
+            
             // 检查GitHub配置（代理模式下无需前端 token）
             if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo || !GITHUB_CONFIG.branch ||
                 (!usingProxy && (!GITHUB_CONFIG.token || GITHUB_CONFIG.token === 'your-token')) ||
                 GITHUB_CONFIG.owner === 'your-username' || GITHUB_CONFIG.repo === 'your-repo') {
+                console.error('❌ GitHub配置不完整');
                 showStatus('uploadStatus', '⚠️ 请先配置 GitHub 存储信息（见使用说明）', 'error');
                 return;
             }
 
+            console.log('✅ 所有验证通过，继续执行上传流程...');
+
             // 匹配 LP
+            console.log('🔍 开始LP号匹配...');
             const matches = [];
             for (const [lpNumber, contract] of databaseData) {
                 if (String(lpNumber).endsWith(lpSuffix)) {
                     matches.push({ lp: lpNumber, contract: contract });
                 }
             }
+            console.log(`🔍 LP匹配结果: ${matches.length} 条`);
+            matches.forEach((match, index) => {
+                console.log(`  ${index + 1}. LP-${match.lp} → ${match.contract}`);
+            });
 
             pendingUploadContext = { files: Array.from(files), lpSuffix };
+            console.log('🔍 已设置上传上下文');
 
             if (matches.length === 0) {
+                console.log('🔍 无LP匹配，使用后四位创建文件夹');
                 // 无匹配，按后四位创建文件夹
                 proceedUploadWithSelection(null, null);
                 return;
             }
             if (matches.length === 1) {
+                console.log('🔍 唯一LP匹配，直接使用');
                 // 唯一匹配，直接使用
                 proceedUploadWithSelection(matches[0].lp, matches[0].contract);
                 return;
             }
 
+            console.log('🔍 多条LP匹配，显示选择弹窗');
             // 多条匹配，弹出选择
             showLpSelection(matches);
         }
 
         function proceedUploadWithSelection(chosenLpNumber, chosenContractNumber) {
+            console.log('🔍 开始执行选择后的上传流程');
+            console.log(`- 选择的LP号: ${chosenLpNumber || '无'}`);
+            console.log(`- 选择的履约单号: ${chosenContractNumber || '无'}`);
+            
             const ctx = pendingUploadContext;
-            if (!ctx) return;
+            if (!ctx) {
+                console.error('❌ 上传上下文丢失');
+                return;
+            }
+            console.log('✅ 上传上下文正常');
 
             const lpSuffix = ctx.lpSuffix;
             const files = ctx.files;
+            console.log(`🔍 上传参数: LP后缀=${lpSuffix}, 文件数=${files.length}`);
 
             const today = new Date();
             const dateStr = today.getFullYear() +
@@ -1597,12 +1637,15 @@
                 `${dateStr}_${chosenContractNumber}` :
                 `${dateStr}_${lpSuffix}`;
 
+            console.log(`🔍 创建文件夹: ${folderName}`);
             showStatus('uploadStatus', `正在上传到GitHub: ${folderName}` , 'info');
             showUploadProgress(0);
 
+            console.log('🔍 调用uploadFilesToGitHub函数...');
             uploadFilesToGitHub(files, folderName, chosenLpNumber || lpSuffix, chosenContractNumber);
 
             pendingUploadContext = null;
+            console.log('🔍 清理上传上下文');
         }
 
         function showLpSelection(matches) {
@@ -2546,6 +2589,151 @@
                 statusElement.className = 'alert alert-error';
                 console.error('移动端测试失败:', error);
             }
+        }
+
+        // 真实上传调试功能
+        async function debugRealUpload() {
+            const statusElement = document.getElementById('githubConfigStatus');
+            const isMobile = isMobileDevice();
+            
+            if (!isMobile) {
+                statusElement.innerHTML = '❌ 此功能仅在移动设备上可用';
+                statusElement.className = 'alert alert-error';
+                return;
+            }
+
+            statusElement.innerHTML = '🔍 开始真实上传流程调试...';
+            statusElement.className = 'alert alert-info';
+
+            let debugReport = `<div><strong>🔍 真实上传调试报告</strong></div><br>`;
+
+            try {
+                // 步骤1: 检查数据库
+                debugReport += `<div><strong>步骤1: 检查数据库状态</strong></div>`;
+                debugReport += `<div>• 数据库记录数: ${databaseData.size}</div>`;
+                if (databaseData.size === 0) {
+                    debugReport += `<div style="color: #dc3545;">⚠️ 数据库为空，这可能影响LP号匹配</div>`;
+                }
+                debugReport += `<br>`;
+
+                // 步骤2: 模拟LP号验证
+                debugReport += `<div><strong>步骤2: LP号验证测试</strong></div>`;
+                const testLpSuffix = '1234';
+                debugReport += `<div>• 测试LP号后缀: ${testLpSuffix}</div>`;
+                
+                const matches = [];
+                for (const [lpNumber, contract] of databaseData) {
+                    if (String(lpNumber).endsWith(testLpSuffix)) {
+                        matches.push({ lp: lpNumber, contract: contract });
+                    }
+                }
+                debugReport += `<div>• 匹配结果: ${matches.length} 条</div>`;
+                if (matches.length > 0) {
+                    debugReport += `<div>• 第一个匹配: LP-${matches[0].lp} → ${matches[0].contract}</div>`;
+                }
+                debugReport += `<br>`;
+
+                // 步骤3: 创建真实测试文件
+                debugReport += `<div><strong>步骤3: 创建真实测试文件</strong></div>`;
+                const testCanvas = document.createElement('canvas');
+                testCanvas.width = 100;
+                testCanvas.height = 100;
+                const ctx = testCanvas.getContext('2d');
+                ctx.fillStyle = '#667eea';
+                ctx.fillRect(0, 0, 100, 100);
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '20px Arial';
+                ctx.fillText('Test', 25, 55);
+                
+                // 转换为Blob
+                const testBlob = await new Promise(resolve => {
+                    testCanvas.toBlob(resolve, 'image/png');
+                });
+                const testFile = new File([testBlob], 'debug_test.png', { type: 'image/png' });
+                debugReport += `<div>• 测试图片文件: ${testFile.name} (${formatFileSize(testFile.size)})</div><br>`;
+
+                // 步骤4: 文件名清理测试
+                debugReport += `<div><strong>步骤4: 文件名清理测试</strong></div>`;
+                const originalName = testFile.name;
+                const cleanName = originalName
+                    .replace(/[^a-zA-Z0-9.\-_\u4e00-\u9fa5]/g, '_')
+                    .replace(/\s+/g, '_')
+                    .replace(/_{2,}/g, '_');
+                const fileName = `${Date.now()}_${cleanName}`;
+                debugReport += `<div>• 原始文件名: ${originalName}</div>`;
+                debugReport += `<div>• 清理后文件名: ${fileName}</div><br>`;
+
+                // 步骤5: FileReader测试
+                debugReport += `<div><strong>步骤5: FileReader真实转换</strong></div>`;
+                try {
+                    const base64 = await fileToBase64(testFile);
+                    const content = base64.split(',')[1];
+                    debugReport += `<div>• Base64转换: ✅ 成功 (${content.length} 字符)</div>`;
+                    debugReport += `<div>• Content预览: ${content.substring(0, 50)}...</div><br>`;
+
+                    // 步骤6: 构建上传参数
+                    debugReport += `<div><strong>步骤6: 构建上传参数</strong></div>`;
+                    const folderName = `${new Date().toISOString().slice(0,10).replace(/-/g, '')}_${testLpSuffix}`;
+                    debugReport += `<div>• 文件夹名: ${folderName}</div>`;
+                    debugReport += `<div>• 文件路径: ${folderName}/${fileName}</div>`;
+                    debugReport += `<div>• GitHub配置检查:</div>`;
+                    debugReport += `<div>&nbsp;&nbsp;- Owner: ${GITHUB_CONFIG.owner}</div>`;
+                    debugReport += `<div>&nbsp;&nbsp;- Repo: ${GITHUB_CONFIG.repo}</div>`;
+                    debugReport += `<div>&nbsp;&nbsp;- Branch: ${GITHUB_CONFIG.branch}</div>`;
+                    debugReport += `<div>&nbsp;&nbsp;- Token: ${GITHUB_CONFIG.token ? '已设置 (' + GITHUB_CONFIG.token.length + ' 字符)' : '❌ 未设置'}</div><br>`;
+
+                    // 步骤7: 实际上传测试
+                    if (GITHUB_CONFIG.token && GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
+                        debugReport += `<div><strong>步骤7: 执行真实上传</strong></div>`;
+                        statusElement.innerHTML = debugReport + `<div>⏳ 正在执行真实上传测试...</div>`;
+                        statusElement.className = 'alert alert-info';
+
+                        try {
+                            const uploadResult = await uploadToGitHub(testFile, folderName, fileName);
+                            if (uploadResult.success) {
+                                debugReport += `<div>✅ 上传成功！</div>`;
+                                debugReport += `<div>• CDN URL: ${uploadResult.url}</div>`;
+                                debugReport += `<div>• Download URL: ${uploadResult.downloadUrl}</div>`;
+                                debugReport += `<br><div style="color: #28a745;"><strong>🎉 真实上传测试成功！移动端上传功能正常</strong></div>`;
+                                statusElement.className = 'alert alert-success';
+                            } else {
+                                debugReport += `<div>❌ 上传失败: ${uploadResult.error}</div>`;
+                                debugReport += `<div><strong>失败原因分析:</strong></div>`;
+                                if (uploadResult.error.includes('403')) {
+                                    debugReport += `<div>• 权限问题：检查Token权限</div>`;
+                                } else if (uploadResult.error.includes('404')) {
+                                    debugReport += `<div>• 仓库问题：检查仓库名称和访问权限</div>`;
+                                } else if (uploadResult.error.includes('network') || uploadResult.error.includes('Failed to fetch')) {
+                                    debugReport += `<div>• 网络问题：建议切换网络</div>`;
+                                } else {
+                                    debugReport += `<div>• 其他问题：${uploadResult.error}</div>`;
+                                }
+                                statusElement.className = 'alert alert-error';
+                            }
+                        } catch (uploadError) {
+                            debugReport += `<div>❌ 上传异常: ${uploadError.message}</div>`;
+                            debugReport += `<div>• 详细错误: ${uploadError.stack || '无详细信息'}</div>`;
+                            statusElement.className = 'alert alert-error';
+                        }
+                    } else {
+                        debugReport += `<div><strong>步骤7: 跳过真实上传</strong></div>`;
+                        debugReport += `<div>❌ GitHub配置不完整，无法执行真实上传测试</div>`;
+                        statusElement.className = 'alert alert-error';
+                    }
+
+                } catch (readerError) {
+                    debugReport += `<div>❌ FileReader转换失败: ${readerError.message}</div>`;
+                    statusElement.className = 'alert alert-error';
+                }
+
+            } catch (error) {
+                debugReport += `<div>❌ 调试过程中发生错误: ${error.message}</div>`;
+                debugReport += `<div>• 错误堆栈: ${error.stack || '无详细信息'}</div>`;
+                statusElement.className = 'alert alert-error';
+                console.error('真实上传调试失败:', error);
+            }
+
+            statusElement.innerHTML = debugReport;
         }
     </script>
 </body>
