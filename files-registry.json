@@ -1,0 +1,18 @@
+{
+  "version": "1.1",
+  "timestamp": 1755682730215,
+  "data": {
+    "20250820_6253": [
+      {
+        "name": "titre de sejour.jpg",
+        "fileName": "1755682728001_titre_de_sejour.jpg",
+        "size": 2570839,
+        "type": "image/jpeg",
+        "url": "https://cdn.jsdelivr.net/gh/Noir2002/file-storage@main/20250820_6253/1755682728001_titre_de_sejour.jpg",
+        "downloadUrl": "https://raw.githubusercontent.com/Noir2002/file-storage/main/20250820_6253/1755682728001_titre_de_sejour.jpg",
+        "uploadTime": "2025/8/20 11:38:50",
+        "storedInGitHub": true
+      }
+    ]
+  }
+}
