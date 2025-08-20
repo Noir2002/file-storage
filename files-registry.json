@@ -1,6 +1,5 @@
 {
-  "version": "1.1",
-  "timestamp": 1755684985736,
+  "version": "1.2",
   "data": {
     "20250820_6253": [
       {
@@ -37,6 +36,18 @@
         "uploadTime": "2025/8/20 12:16:25",
         "storedInGitHub": true
       }
-    ]
-  }
+    ],
+    "1755697479254_titre_de_sejour.jpg": {
+      "name": "titre de sejour.jpg",
+      "fileName": "1755697479254_titre_de_sejour.jpg",
+      "folder": "20250820_5472",
+      "lpNumber": "5472",
+      "contractNumber": null,
+      "size": 2570839,
+      "url": "https://cdn.jsdelivr.net/gh/Noir2002/file-storage@main/20250820_5472/1755697479254_titre_de_sejour.jpg",
+      "downloadUrl": "https://raw.githubusercontent.com/Noir2002/file-storage/main/20250820_5472/1755697479254_titre_de_sejour.jpg",
+      "uploadTime": "2025-08-20T13:44:42.054Z"
+    }
+  },
+  "timestamp": 1755697482054
 }
