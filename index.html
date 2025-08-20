@@ -656,15 +656,17 @@
                 </div>
                 <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                     <button onclick="importDatabase()" class="btn">导入数据库</button>
+                    <button onclick="syncDataFromGitHub()" class="btn btn-secondary">🔄 从GitHub同步</button>
                     <button onclick="clearLocalStorage()" class="btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">清除本地数据</button>
                 </div>
 
                 <div id="databaseStatus"></div>
 
-                <!-- 本地存储状态显示 -->
+                <!-- 数据状态显示 -->
                 <div id="localStorageStatus" class="alert alert-info" style="margin-top: 15px; display: none;">
-                    <strong>📊 本地存储状态</strong><br>
+                    <strong>📊 数据状态</strong><br>
                     <div id="storageInfo"></div>
+                    <div id="syncInfo" style="margin-top: 8px; font-size: 12px; color: #666;"></div>
                 </div>
 
                 <div id="databasePreview" style="display: none;">
@@ -750,15 +752,128 @@
         let selectionMode = false; // 是否处于选择导出模式
         let selectedItems = new Set(); // 选中文件键集合：folderName|fileKey
 
-        // 本地存储键名
+        // GitHub云端存储文件名
+        const GITHUB_FILES = {
+            DATABASE: 'database.json',
+            FILES_REGISTRY: 'files-registry.json'
+        };
+
+        // 本地存储键名（作为备份）
         const STORAGE_KEYS = {
             DATABASE: 'fileStorage_database',
             FILES: 'fileStorage_uploadedFiles',
-            VERSION: 'fileStorage_version'
+            VERSION: 'fileStorage_version',
+            LAST_SYNC: 'fileStorage_lastSync'
         };
 
         // 当前数据版本（用于处理数据格式变更）
-        const DATA_VERSION = '1.0';
+        const DATA_VERSION = '1.1';
+
+        // 同步状态
+        let issyncing = false;
+        let lastSyncTime = 0;
+        let autoSyncInterval = null;
+        const AUTO_SYNC_INTERVAL = 60000; // 每60秒自动同步一次
+
+        // GitHub云端数据操作函数
+        async function saveDataToGitHub(fileName, data) {
+            try {
+                if (issyncing) {
+                    console.log('正在同步中，跳过保存操作');
+                    return { success: false, error: '正在同步中' };
+                }
+                
+                issyncing = true;
+                console.log(`开始保存 ${fileName} 到 GitHub...`);
+                
+                const content = btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2))));
+                
+                // 首先尝试获取现有文件的SHA（如果存在）
+                let sha = null;
+                try {
+                    const getUrl = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${fileName}`;
+                    const getResponse = await fetch(getUrl, {
+                        headers: {
+                            'Authorization': `token ${GITHUB_CONFIG.token}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    if (getResponse.ok) {
+                        const existingFile = await getResponse.json();
+                        sha = existingFile.sha;
+                    }
+                } catch (e) {
+                    // 文件不存在，继续创建
+                }
+                
+                // 保存/更新文件
+                const url = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${fileName}`;
+                const payload = {
+                    message: `Update ${fileName} - ${new Date().toISOString()}`,
+                    content: content,
+                    branch: GITHUB_CONFIG.branch
+                };
+                
+                if (sha) {
+                    payload.sha = sha; // 更新现有文件需要SHA
+                }
+                
+                const response = await fetch(url, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `token ${GITHUB_CONFIG.token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (response.ok) {
+                    console.log(`${fileName} 保存到 GitHub 成功`);
+                    lastSyncTime = Date.now();
+                    localStorage.setItem(STORAGE_KEYS.LAST_SYNC, lastSyncTime.toString());
+                    return { success: true };
+                } else {
+                    const errorData = await response.json();
+                    throw new Error(`GitHub API错误 ${response.status}: ${errorData.message}`);
+                }
+            } catch (error) {
+                console.error(`保存 ${fileName} 到 GitHub 失败:`, error);
+                return { success: false, error: error.message };
+            } finally {
+                issyncing = false;
+            }
+        }
+
+        async function loadDataFromGitHub(fileName) {
+            try {
+                console.log(`开始从 GitHub 加载 ${fileName}...`);
+                
+                const url = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${fileName}`;
+                const response = await fetch(url, {
+                    headers: {
+                        'Authorization': `token ${GITHUB_CONFIG.token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    const fileData = await response.json();
+                    const content = decodeURIComponent(escape(atob(fileData.content)));
+                    const data = JSON.parse(content);
+                    console.log(`从 GitHub 加载 ${fileName} 成功`);
+                    return { success: true, data: data };
+                } else if (response.status === 404) {
+                    console.log(`${fileName} 在 GitHub 中不存在`);
+                    return { success: false, error: 'File not found', notFound: true };
+                } else {
+                    const errorData = await response.json();
+                    throw new Error(`GitHub API错误 ${response.status}: ${errorData.message}`);
+                }
+            } catch (error) {
+                console.error(`从 GitHub 加载 ${fileName} 失败:`, error);
+                return { success: false, error: error.message };
+            }
+        }
 
         // 数据持久化函数
         function saveDatabaseToLocal() {
@@ -835,6 +950,68 @@
             return false;
         }
 
+        // GitHub数据库操作
+        async function saveDatabaseToGitHub() {
+            const dataObject = {};
+            databaseData.forEach((value, key) => {
+                dataObject[key] = value;
+            });
+            
+            const payload = {
+                version: DATA_VERSION,
+                timestamp: Date.now(),
+                data: dataObject
+            };
+            
+            return await saveDataToGitHub(GITHUB_FILES.DATABASE, payload);
+        }
+
+        async function loadDatabaseFromGitHub() {
+            const result = await loadDataFromGitHub(GITHUB_FILES.DATABASE);
+            if (result.success && result.data) {
+                databaseData.clear();
+                if (result.data.data) {
+                    Object.entries(result.data.data).forEach(([key, value]) => {
+                        databaseData.set(key, value);
+                    });
+                }
+                saveDatabaseToLocal(); // 同步到本地作为备份
+                return true;
+            }
+            return false;
+        }
+
+        // GitHub文件注册表操作
+        async function saveFilesRegistryToGitHub() {
+            const filesObject = {};
+            uploadedFiles.forEach((value, key) => {
+                filesObject[key] = value;
+            });
+            
+            const payload = {
+                version: DATA_VERSION,
+                timestamp: Date.now(),
+                data: filesObject
+            };
+            
+            return await saveDataToGitHub(GITHUB_FILES.FILES_REGISTRY, payload);
+        }
+
+        async function loadFilesRegistryFromGitHub() {
+            const result = await loadDataFromGitHub(GITHUB_FILES.FILES_REGISTRY);
+            if (result.success && result.data) {
+                uploadedFiles.clear();
+                if (result.data.data) {
+                    Object.entries(result.data.data).forEach(([key, value]) => {
+                        uploadedFiles.set(key, value);
+                    });
+                }
+                saveFilesToLocal(); // 同步到本地作为备份
+                return true;
+            }
+            return false;
+        }
+
         function clearLocalStorage() {
             try {
                 localStorage.removeItem(STORAGE_KEYS.DATABASE);
@@ -854,6 +1031,7 @@
             try {
                 const statusDiv = document.getElementById('localStorageStatus');
                 const infoDiv = document.getElementById('storageInfo');
+                const syncDiv = document.getElementById('syncInfo');
                 
                 const dbCount = databaseData.size;
                 let fileCount = 0;
@@ -870,6 +1048,14 @@
                         • 文件夹: ${folderCount} 个<br>
                         • 文件记录: ${fileCount} 个
                     `;
+                    
+                    // 显示同步状态
+                    if (lastSyncTime > 0) {
+                        const syncTime = new Date(lastSyncTime).toLocaleString('zh-CN');
+                        syncDiv.innerHTML = `🔄 GitHub同步: ${syncTime} | 自动同步: ${autoSyncInterval ? '开启' : '关闭'}`;
+                    } else {
+                        syncDiv.innerHTML = `⚠️ 尚未与GitHub同步`;
+                    }
                 } else {
                     statusDiv.style.display = 'none';
                 }
@@ -980,10 +1166,20 @@
                     });
 
                     if (successCount > 0) {
-                        saveDatabaseToLocal(); // 自动保存到本地存储
-                        updateStorageStatus(); // 更新存储状态显示
-                        showStatus('databaseStatus', `数据库导入成功！共导入 ${successCount} 条记录（已保存到本地）`, 'success');
+                        // 同时保存到本地和GitHub
+                        saveDatabaseToLocal();
+                        updateStorageStatus();
+                        showStatus('databaseStatus', `数据库导入成功！共导入 ${successCount} 条记录，正在同步到GitHub...`, 'info');
                         displayDatabasePreview();
+                        
+                        // 异步保存到GitHub
+                        saveDatabaseToGitHub().then(result => {
+                            if (result.success) {
+                                showStatus('databaseStatus', `✅ 数据库导入成功！共导入 ${successCount} 条记录（已同步到GitHub）`, 'success');
+                            } else {
+                                showStatus('databaseStatus', `⚠️ 数据库导入成功！共导入 ${successCount} 条记录（本地已保存，GitHub同步失败：${result.error}）`, 'error');
+                            }
+                        });
                     } else {
                         showStatus('databaseStatus', '未找到有效数据，请检查Excel文件格式', 'error');
                     }
@@ -1272,7 +1468,16 @@
                         };
                         uploadedFiles.get(folderName).push(fileObj);
                         uploadedCount++;
-                        saveFilesToLocal(); // 每次成功上传后立即保存到本地存储
+                        saveFilesToLocal(); // 保存到本地存储
+                        
+                        // 异步同步到GitHub（不阻塞界面）
+                        saveFilesRegistryToGitHub().then(result => {
+                            if (result.success) {
+                                console.log('文件记录已同步到GitHub');
+                            } else {
+                                console.error('文件记录同步到GitHub失败:', result.error);
+                            }
+                        });
                     } else {
                         failedCount++;
                         console.error(`上传失败: ${file.name}`, result.error);
@@ -1418,27 +1623,150 @@
             updateExportControls();
         }
 
+        // 数据同步函数
+        async function syncDataFromGitHub() {
+            if (!GITHUB_CONFIG.token || !GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo) {
+                console.log('GitHub配置不完整，跳过云端同步');
+                // 回退到本地数据
+                const dbLoaded = loadDatabaseFromLocal();
+                const filesLoaded = loadFilesFromLocal();
+                if (dbLoaded || filesLoaded) {
+                    updateFileDisplay();
+                    updateStorageStatus();
+                    if (dbLoaded) {
+                        showStatus('databaseStatus', `已从本地存储加载 ${databaseData.size} 条数据库记录`, 'info');
+                        displayDatabasePreview();
+                    }
+                }
+                return;
+            }
+
+            try {
+                showStatus('databaseStatus', '🔄 正在从GitHub同步数据...', 'info');
+                
+                // 并行加载数据库和文件注册表
+                const [dbResult, filesResult] = await Promise.all([
+                    loadDatabaseFromGitHub(),
+                    loadFilesRegistryFromGitHub()
+                ]);
+
+                let message = '✅ GitHub数据同步完成: ';
+                const parts = [];
+                
+                if (dbResult) {
+                    parts.push(`数据库 ${databaseData.size} 条`);
+                    displayDatabasePreview();
+                }
+                
+                if (filesResult) {
+                    let fileCount = 0;
+                    uploadedFiles.forEach(files => fileCount += files.length);
+                    parts.push(`文件 ${fileCount} 个`);
+                    updateFileDisplay();
+                }
+
+                if (parts.length > 0) {
+                    message += parts.join('，');
+                    showStatus('databaseStatus', message, 'success');
+                } else {
+                    showStatus('databaseStatus', '📂 GitHub上暂无数据，您可以开始导入数据库和上传文件', 'info');
+                }
+                
+                updateStorageStatus();
+                
+            } catch (error) {
+                console.error('GitHub同步失败:', error);
+                showStatus('databaseStatus', `⚠️ GitHub同步失败: ${error.message}，已加载本地数据`, 'error');
+                
+                // 回退到本地数据
+                const dbLoaded = loadDatabaseFromLocal();
+                const filesLoaded = loadFilesFromLocal();
+                if (dbLoaded || filesLoaded) {
+                    updateFileDisplay();
+                    updateStorageStatus();
+                    if (dbLoaded) {
+                        displayDatabasePreview();
+                    }
+                }
+            }
+        }
+
+        // 自动同步管理
+        function startAutoSync() {
+            if (autoSyncInterval) {
+                clearInterval(autoSyncInterval);
+            }
+            
+            autoSyncInterval = setInterval(async () => {
+                if (!issyncing && GITHUB_CONFIG.token && GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
+                    console.log('执行自动同步检查...');
+                    
+                    try {
+                        // 检查GitHub上的数据是否有更新
+                        const [dbResult, filesResult] = await Promise.all([
+                            loadDataFromGitHub(GITHUB_FILES.DATABASE),
+                            loadDataFromGitHub(GITHUB_FILES.FILES_REGISTRY)
+                        ]);
+                        
+                        let updated = false;
+                        
+                        // 检查数据库更新
+                        if (dbResult.success && dbResult.data && dbResult.data.timestamp > lastSyncTime) {
+                            await loadDatabaseFromGitHub();
+                            displayDatabasePreview();
+                            updated = true;
+                            console.log('数据库已自动更新');
+                        }
+                        
+                        // 检查文件注册表更新
+                        if (filesResult.success && filesResult.data && filesResult.data.timestamp > lastSyncTime) {
+                            await loadFilesRegistryFromGitHub();
+                            updateFileDisplay();
+                            updated = true;
+                            console.log('文件列表已自动更新');
+                        }
+                        
+                        if (updated) {
+                            updateStorageStatus();
+                            // 可以在这里显示提示，但不要太频繁打扰用户
+                            console.log('✅ 自动同步完成，数据已更新');
+                        }
+                        
+                    } catch (error) {
+                        console.error('自动同步失败:', error);
+                    }
+                }
+            }, AUTO_SYNC_INTERVAL);
+            
+            console.log('自动同步已启动，间隔:', AUTO_SYNC_INTERVAL / 1000, '秒');
+        }
+
+        function stopAutoSync() {
+            if (autoSyncInterval) {
+                clearInterval(autoSyncInterval);
+                autoSyncInterval = null;
+                console.log('自动同步已停止');
+            }
+        }
+
         // 输入与移动端优化
         document.addEventListener('DOMContentLoaded', function() {
-            // 载入本地存储的数据
-            const dbLoaded = loadDatabaseFromLocal();
-            const filesLoaded = loadFilesFromLocal();
-            
-            // 如果有数据，显示状态和更新界面
-            if (dbLoaded) {
-                showStatus('databaseStatus', `已从本地存储加载 ${databaseData.size} 条数据库记录`, 'success');
-                displayDatabasePreview();
-            }
-            if (filesLoaded) {
-                updateFileDisplay();
-            }
-            
-            // 更新存储状态显示
-            updateStorageStatus();
-            
             // 载入本地 GitHub 配置
             loadGitHubConfig();
             checkGitHubConfig();
+            
+            // 等待配置加载完成后同步数据
+            setTimeout(() => {
+                syncDataFromGitHub();
+                
+                // 启动自动同步
+                startAutoSync();
+            }, 100);
+            
+            // 页面关闭时停止自动同步
+            window.addEventListener('beforeunload', () => {
+                stopAutoSync();
+            });
             document.getElementById('lpSuffix').addEventListener('input', function(e) {
                 e.target.value = e.target.value.replace(/[^0-9]/g, '');
             });
