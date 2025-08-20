@@ -491,16 +491,16 @@
             <button class="nav-toggle" onclick="toggleMobileMenu()">☰</button>
             <ul class="nav-menu" id="navMenu">
                 <li class="nav-item">
-                    <a href="#" class="nav-link active" onclick="showPage('config')">存储配置</a>
+                    <a href="#" class="nav-link active" onclick="showPage('config', event)">存储配置</a>
                 </li>
                 <li class="nav-item">
-                    <a href="#" class="nav-link" onclick="showPage('database')">数据库管理</a>
+                    <a href="#" class="nav-link" onclick="showPage('database', event)">数据库管理</a>
                 </li>
                 <li class="nav-item">
-                    <a href="#" class="nav-link" onclick="showPage('upload')">文件上传</a>
+                    <a href="#" class="nav-link" onclick="showPage('upload', event)">文件上传</a>
                 </li>
                 <li class="nav-item">
-                    <a href="#" class="nav-link" onclick="showPage('manage')">文件管理</a>
+                    <a href="#" class="nav-link" onclick="showPage('manage', event)">文件管理</a>
                 </li>
             </ul>
         </div>
@@ -595,10 +595,14 @@
                 
                 <div class="form-group">
                     <label for="fileInput">选择要上传的文件：</label>
-                    <input type="file" id="fileInput" multiple>
+                    <input type="file" id="fileInput" multiple onchange="handleFileInputChange()">
                     <small id="fileInputTip" style="color: #718096; margin-top: 5px; display: block;">
                         支持多文件选择，建议单个文件不超过50MB
                     </small>
+                    <div id="selectedFilesInfo" style="color: #718096; margin-top: 8px; display: none;"></div>
+                    <div id="selectedFilesActions" style="margin-top: 8px; display: none;">
+                        <button type="button" class="btn btn-small btn-secondary" onclick="clearSelectedFiles()">🧹 清空选择</button>
+                    </div>
                 </div>
 
                 <div style="margin: 20px 0;">
@@ -659,6 +663,7 @@
         let currentLpMatches = [];
         let pendingUploadContext = null;
         let databaseImportDate = null;
+        let desktopSelectedFiles = [];
 
         // GitHub 配置
         const GITHUB_CONFIG = {
@@ -675,7 +680,8 @@
             DATABASE: 'fileStorage_database',
             FILES: 'fileStorage_files',
             GITHUB_CONFIG: 'fileStorage_github_config',
-            DATABASE_DATE: 'fileStorage_database_date'
+            DATABASE_DATE: 'fileStorage_database_date',
+            LAST_PAGE: 'fileStorage_last_page'
         };
 
         const DATA_VERSION = '1.2';
@@ -691,7 +697,7 @@
         let autoSyncTimer = null;
 
         // 页面导航
-        function showPage(pageId) {
+        function showPage(pageId, evt) {
             // 隐藏所有页面
             document.querySelectorAll('.page').forEach(page => {
                 page.classList.remove('active');
@@ -704,10 +710,22 @@
             document.querySelectorAll('.nav-link').forEach(link => {
                 link.classList.remove('active');
             });
-            event.target.classList.add('active');
+            if (evt && evt.target) {
+                evt.preventDefault();
+                evt.target.classList.add('active');
+            } else {
+                // 无事件（如刷新恢复）时，尝试根据pageId匹配对应的导航链接
+                const link = document.querySelector(`.nav-link[onclick^="showPage('${pageId}'"]`);
+                if (link) link.classList.add('active');
+            }
             
             // 关闭移动端菜单
             document.getElementById('navMenu').classList.remove('show');
+
+            // 记住当前页面
+            try {
+                localStorage.setItem(STORAGE_KEYS.LAST_PAGE, pageId);
+            } catch (e) {}
         }
 
         // 移动端菜单切换
@@ -1020,7 +1038,10 @@
         async function uploadFiles() {
             const lpSuffix = document.getElementById('lpSuffix').value.trim();
             const fileInput = document.getElementById('fileInput');
-            const files = fileInput.files;
+            // 合并：若桌面端已累计选择，则以累计为准；否则使用当前 input 选择
+            const files = (desktopSelectedFiles && desktopSelectedFiles.length > 0)
+                ? desktopSelectedFiles
+                : Array.from(fileInput.files);
 
             // 验证输入
             if (!lpSuffix || lpSuffix.length !== 4 || !/^\d{4}$/.test(lpSuffix)) {
@@ -1182,6 +1203,9 @@
 
             document.getElementById('fileInput').value = '';
             document.getElementById('lpSuffix').value = '';
+            // 清空累计与展示
+            desktopSelectedFiles = [];
+            updateSelectedFilesInfo();
         }
 
         // 上传单个文件到GitHub
@@ -1393,6 +1417,61 @@
                     reject(new Error(`文件读取器初始化失败: ${error.message}`));
                 }
             });
+        }
+
+        // 桌面端多次选择累积
+        function handleFileInputChange() {
+            try {
+                const isMobile = isMobileDevice();
+                const input = document.getElementById('fileInput');
+                const newFiles = Array.from(input.files || []);
+                if (!newFiles.length) return;
+
+                if (isMobile) {
+                    // 移动端保持原有行为（一次性多选）
+                    desktopSelectedFiles = newFiles;
+                } else {
+                    // 桌面端累积
+                    const existingNames = new Set(desktopSelectedFiles.map(f => f.name + '_' + f.size));
+                    for (const f of newFiles) {
+                        const key = f.name + '_' + f.size;
+                        if (!existingNames.has(key)) {
+                            desktopSelectedFiles.push(f);
+                            existingNames.add(key);
+                        }
+                    }
+                }
+
+                // 重置 input，便于再次选择同名文件
+                input.value = '';
+                updateSelectedFilesInfo();
+            } catch (e) {
+                console.warn('处理文件选择失败:', e);
+            }
+        }
+
+        function updateSelectedFilesInfo() {
+            const info = document.getElementById('selectedFilesInfo');
+            const actions = document.getElementById('selectedFilesActions');
+            const count = desktopSelectedFiles.length;
+            if (!info || !actions) return;
+            if (count > 0) {
+                const totalSize = desktopSelectedFiles.reduce((s, f) => s + (f.size || 0), 0);
+                info.style.display = 'block';
+                actions.style.display = 'block';
+                info.textContent = `已选择 ${count} 个文件，共 ${formatFileSize(totalSize)}`;
+            } else {
+                info.style.display = 'none';
+                actions.style.display = 'none';
+                info.textContent = '';
+            }
+        }
+
+        function clearSelectedFiles() {
+            desktopSelectedFiles = [];
+            const input = document.getElementById('fileInput');
+            if (input) input.value = '';
+            updateSelectedFilesInfo();
         }
 
         // 文件管理相关函数
@@ -1765,6 +1844,13 @@
             loadFilesFromLocal();
             updateDatabaseDisplay();
             displayFileList();
+            // 恢复上次打开页面
+            try {
+                const last = localStorage.getItem(STORAGE_KEYS.LAST_PAGE);
+                if (last && ['config','database','upload','manage'].includes(last)) {
+                    showPage(last);
+                }
+            } catch (e) {}
             
             // 尝试从GitHub同步数据
             try {
