@@ -646,6 +646,7 @@
                 <button onclick="runMobileDiagnostics()" class="btn" style="background: linear-gradient(135deg, #17a2b8, #138496);">📱 移动端诊断</button>
                 <button onclick="testMobileUpload()" class="btn" style="background: linear-gradient(135deg, #28a745, #20c997);">🧪 测试移动端上传</button>
                 <button onclick="debugRealUpload()" class="btn" style="background: linear-gradient(135deg, #fd7e14, #e55353);">🔍 真实上传调试</button>
+                <button onclick="toggleUploadMode()" class="btn" style="background: linear-gradient(135deg, #6f42c1, #007bff);" id="uploadModeBtn">🔄 切换上传模式</button>
             </div>
 
             <div class="section">
@@ -1073,7 +1074,7 @@
             repo: 'file-storage',
             token: '',          // 运行时填写（本地存储），避免将密钥提交到仓库
             branch: 'main',
-            useProxy: true,             // 默认走服务端代理，稳定且安全
+            useProxy: false,            // 默认使用直传模式（静态网站没有后端代理）
             proxyEndpoint: '/api/upload'
         };
 
@@ -1279,40 +1280,47 @@
 
                 console.log(`开始上传文件: ${fileName}, 大小: ${formatFileSize(file.size)}, 设备: ${isMobile ? '移动端' : '桌面端'}`);
 
-                // 优先走代理（服务端持有 Token，更稳定）
+                // 智能选择上传模式：优先检测代理，失败则使用直传
                 if (GITHUB_CONFIG.useProxy && GITHUB_CONFIG.proxyEndpoint) {
-                    console.log('使用代理模式上传...');
+                    console.log('尝试代理模式上传...');
                     
-                    const requestBody = {
-                        owner: GITHUB_CONFIG.owner,
-                        repo: GITHUB_CONFIG.repo,
-                        branch: GITHUB_CONFIG.branch,
-                        folderPath,
-                        fileName,
-                        contentBase64: content
-                    };
-                    
-                    const proxyRes = await fetch(GITHUB_CONFIG.proxyEndpoint, {
-                        method: 'POST',
-                        headers: { 
-                            'Content-Type': 'application/json',
-                            'User-Agent': isMobile ? 'Mobile-FileUploader' : 'Desktop-FileUploader'
-                        },
-                        body: JSON.stringify(requestBody)
-                    });
-                    
-                    console.log(`代理响应状态: ${proxyRes.status}`);
-                    
-                    if (!proxyRes.ok) {
-                        const errorText = await proxyRes.text();
-                        console.error('代理错误详情:', errorText);
-                        throw new Error(`代理服务器错误 ${proxyRes.status}: ${errorText}`);
+                    try {
+                        const requestBody = {
+                            owner: GITHUB_CONFIG.owner,
+                            repo: GITHUB_CONFIG.repo,
+                            branch: GITHUB_CONFIG.branch,
+                            folderPath,
+                            fileName,
+                            contentBase64: content
+                        };
+                        
+                        const proxyRes = await fetch(GITHUB_CONFIG.proxyEndpoint, {
+                            method: 'POST',
+                            headers: { 
+                                'Content-Type': 'application/json',
+                                'User-Agent': isMobile ? 'Mobile-FileUploader' : 'Desktop-FileUploader'
+                            },
+                            body: JSON.stringify(requestBody)
+                        });
+                        
+                        console.log(`代理响应状态: ${proxyRes.status}`);
+                        
+                        if (proxyRes.ok) {
+                            const data = await proxyRes.json();
+                            if (data.success) {
+                                console.log('代理上传成功');
+                                return data;
+                            } else {
+                                throw new Error(data.error || 'Proxy返回失败');
+                            }
+                        } else {
+                            throw new Error(`代理服务器错误 ${proxyRes.status}`);
+                        }
+                        
+                    } catch (proxyError) {
+                        console.warn('代理模式失败，切换到直传模式:', proxyError.message);
+                        // 代理失败，继续使用直传模式
                     }
-                    
-                    const data = await proxyRes.json();
-                    if (!data.success) throw new Error(data.error || 'Proxy返回失败');
-                    console.log('代理上传成功');
-                    return data;
                 }
 
                 // 直传（前端持有 Token）
@@ -2026,6 +2034,12 @@
                 
                 // 启动自动同步
                 startAutoSync();
+                
+                // 初始化上传模式按钮
+                const uploadModeBtn = document.getElementById('uploadModeBtn');
+                if (uploadModeBtn) {
+                    uploadModeBtn.innerHTML = GITHUB_CONFIG.useProxy ? '🔄 切换到直传模式' : '🔄 切换到代理模式';
+                }
             }, 100);
             
             // 页面关闭时停止自动同步
@@ -2396,8 +2410,28 @@
                     statusElement.className = 'alert alert-error';
                 }
             } else {
-                statusElement.innerHTML = `✅ 代理模式配置完成 ${configInfo}<div><small>将通过服务器代理上传文件</small></div>`;
-                statusElement.className = 'alert alert-success';
+                // 测试代理可用性
+                try {
+                    statusElement.innerHTML = `🔍 正在测试代理可用性... ${configInfo}`;
+                    statusElement.className = 'alert alert-info';
+                    
+                    const proxyTestUrl = GITHUB_CONFIG.proxyEndpoint || '/api/upload';
+                    const proxyResponse = await fetch(proxyTestUrl, {
+                        method: 'OPTIONS', // 使用OPTIONS请求测试端点
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    
+                    if (proxyResponse.ok || proxyResponse.status === 405) { // 405表示方法不支持但端点存在
+                        statusElement.innerHTML = `✅ 代理模式配置完成 ${configInfo}<div><small>代理端点可用，将优先使用代理上传</small></div>`;
+                        statusElement.className = 'alert alert-success';
+                    } else {
+                        throw new Error(`代理端点不可用 (${proxyResponse.status})`);
+                    }
+                } catch (proxyError) {
+                    console.warn('代理端点测试失败:', proxyError.message);
+                    statusElement.innerHTML = `⚠️ 代理模式配置完成但代理不可用 ${configInfo}<div><small>将自动使用直传模式。错误: ${proxyError.message}</small></div>`;
+                    statusElement.className = 'alert alert-error';
+                }
             }
         }
 
@@ -2734,6 +2768,35 @@
             }
 
             statusElement.innerHTML = debugReport;
+        }
+
+        // 切换上传模式
+        function toggleUploadMode() {
+            GITHUB_CONFIG.useProxy = !GITHUB_CONFIG.useProxy;
+            
+            // 保存到本地存储
+            localStorage.setItem('gh_useProxy', String(GITHUB_CONFIG.useProxy));
+            
+            // 更新按钮文本
+            const btn = document.getElementById('uploadModeBtn');
+            const statusElement = document.getElementById('githubConfigStatus');
+            
+            if (GITHUB_CONFIG.useProxy) {
+                btn.innerHTML = '🔄 切换到直传模式';
+                statusElement.innerHTML = '⚙️ 已切换到代理模式（需要后端支持）';
+                statusElement.className = 'alert alert-info';
+            } else {
+                btn.innerHTML = '🔄 切换到代理模式';
+                statusElement.innerHTML = '⚙️ 已切换到直传模式（推荐用于静态网站）';
+                statusElement.className = 'alert alert-success';
+            }
+            
+            console.log(`上传模式已切换为: ${GITHUB_CONFIG.useProxy ? '代理模式' : '直传模式'}`);
+            
+            // 1秒后重新检查配置
+            setTimeout(() => {
+                checkGitHubConfig();
+            }, 1000);
         }
     </script>
 </body>
