@@ -102,18 +102,7 @@
       "url": "https://cdn.jsdelivr.net/gh/Noir2002/file-storage@main/20250820_0381/1755703080703_17557030663682861928691926157738.jpg",
       "downloadUrl": "https://raw.githubusercontent.com/Noir2002/file-storage/main/20250820_0381/1755703080703_17557030663682861928691926157738.jpg",
       "uploadTime": "2025-08-20T15:18:03.555Z"
-    },
-    "1755704399866_image.jpg": {
-      "name": "image.jpg",
-      "fileName": "1755704399866_image.jpg",
-      "folder": "20250820_8888",
-      "lpNumber": "8888",
-      "contractNumber": null,
-      "size": 2660865,
-      "url": "https://cdn.jsdelivr.net/gh/Noir2002/file-storage@main/20250820_8888/1755704399866_image.jpg",
-      "downloadUrl": "https://raw.githubusercontent.com/Noir2002/file-storage/main/20250820_8888/1755704399866_image.jpg",
-      "uploadTime": "2025-08-20T15:40:03.078Z"
     }
   },
-  "timestamp": 1755768130770
+  "timestamp": 1755768175032
 }
