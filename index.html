@@ -685,6 +685,8 @@
                     <button onclick="exportAllFiles()" class="btn btn-success">📦 导出所有文件</button>
                     <button onclick="syncDataFromGitHub()" class="btn btn-secondary">☁️ 从GitHub同步</button>
                     <button onclick="openDeleteByFolderModal()" class="btn btn-danger">🗑️ 删除文件</button>
+                    <button onclick="rebuildRegistryFromRepo('today')" class="btn btn-secondary">🔍 重建注册表(当天)</button>
+                    <button onclick="rebuildRegistryFromRepo('all')" class="btn btn-secondary">🛠️ 重建注册表(全量)</button>
                 </div>
 
                 <div id="packingInfo" class="database-info" style="display:none;">
@@ -2625,6 +2627,77 @@
             }
         }
 
+        // 从仓库扫描并重建注册表（today: 仅当天；all: 全量）
+        async function rebuildRegistryFromRepo(scope) {
+            try {
+                if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo || !GITHUB_CONFIG.branch || !GITHUB_CONFIG.token) {
+                    showStatus('fileManageStatus', '⚠️ 请先配置 GitHub 信息', 'error');
+                    return;
+                }
+                const dateStr = getImportDateStr();
+                showStatus('fileManageStatus', scope==='today' ? `正在扫描并重建 ${dateStr} 的注册表...` : '正在全量扫描并重建注册表...', 'info');
+
+                // 读取仓库树
+                const treeUrl = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/git/trees/${GITHUB_CONFIG.branch}?recursive=1`;
+                const treeRes = await fetch(treeUrl, {
+                    headers: { 'Authorization': `token ${GITHUB_CONFIG.token}`, 'User-Agent': 'FileUploader' }
+                });
+                if (!treeRes.ok) {
+                    throw new Error(`读取仓库树失败: ${treeRes.status}`);
+                }
+                const treeData = await treeRes.json();
+                const paths = (treeData.tree || []).filter(n => n.type === 'blob').map(n => n.path);
+
+                // 过滤出我们关心的文件：YYYYMMDD_xxx/<file>
+                const fileEntries = [];
+                const dateRegex = /^([0-9]{8})_([^\/]+)\//;
+                for (const p of paths) {
+                    const m = p.match(dateRegex);
+                    if (!m) continue;
+                    const d = m[1];
+                    if (scope === 'today' && d !== dateStr) continue;
+                    const folder = p.split('/')[0];
+                    const fileName = p.split('/').slice(-1)[0];
+                    fileEntries.push({ folder, fileName, path: p, date: d });
+                }
+
+                if (fileEntries.length === 0) {
+                    showStatus('fileManageStatus', '未在仓库中发现可用文件', 'warning');
+                    return;
+                }
+
+                // 将扫描结果合并到 uploadedFiles 结构中（保持已有字段尽量完整）
+                const newMap = new Map(uploadedFiles);
+                for (const fe of fileEntries) {
+                    // 用路径末端文件名作为 key，如果原注册表存在相同key则跳过
+                    const key = fe.fileName.startsWith('http') ? fe.path : fe.fileName;
+                    if (!newMap.has(key)) {
+                        newMap.set(key, {
+                            name: fe.fileName,
+                            fileName: fe.fileName,
+                            folder: fe.folder,
+                            size: undefined,
+                            url: `https://cdn.jsdelivr.net/gh/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}@${GITHUB_CONFIG.branch}/${fe.path}`,
+                            downloadUrl: `https://raw.githubusercontent.com/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/${GITHUB_CONFIG.branch}/${fe.path}`,
+                            uploadTime: new Date().toISOString()
+                        });
+                    }
+                }
+
+                uploadedFiles = newMap;
+                // 持久化并推送注册表，带 409 重试
+                saveFilesToLocal();
+                await saveFilesRegistryToGitHub();
+
+                displayFileList();
+                updatePackingInfo();
+                showStatus('fileManageStatus', '✅ 注册表已重建并同步', 'success');
+            } catch (e) {
+                console.warn('重建注册表失败:', e);
+                showStatus('fileManageStatus', `❌ 重建注册表失败：${e.message}`, 'error');
+            }
+        }
+
         // 存储相关函数
         function saveDatabaseToLocal() {
             try {
@@ -2795,17 +2868,34 @@
                 payload.sha = sha;
             }
             
-            const response = await fetch(url, {
-                method: 'PUT',
-                headers: {
-                    'Authorization': `token ${GITHUB_CONFIG.token}`,
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'FileUploader'
-                },
-                body: JSON.stringify(payload)
-            });
-            
-            if (!response.ok) {
+            // 写入并处理 409 冲突：重取 sha 后重试
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const response = await fetch(url, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `token ${GITHUB_CONFIG.token}`,
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'FileUploader'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                if (response.ok) break;
+                if (response.status === 409) {
+                    // 重新获取最新 sha 合并重试
+                    try {
+                        const existingResponse = await fetch(url, {
+                            headers: {
+                                'Authorization': `token ${GITHUB_CONFIG.token}`,
+                                'User-Agent': 'FileUploader'
+                            }
+                        });
+                        if (existingResponse.ok) {
+                            const existing = await existingResponse.json();
+                            payload.sha = existing.sha;
+                            continue; // retry
+                        }
+                    } catch (_) {}
+                }
                 throw new Error(`保存${fileName}失败: ${response.status}`);
             }
         }
@@ -2832,8 +2922,22 @@
             }
             
             const result = await response.json();
-            const content = decodeURIComponent(escape(atob(result.content)));
-            return JSON.parse(content);
+            // base64 兼容：去除换行符，再解码；失败兜底使用 TextDecoder
+            let contentText = '';
+            try {
+                const cleaned = (result.content || '').replace(/\n/g, '');
+                contentText = decodeURIComponent(escape(atob(cleaned)));
+            } catch (_) {
+                try {
+                    const cleaned = (result.content || '').replace(/\n/g, '');
+                    const binary = atob(cleaned);
+                    const bytes = new Uint8Array([...binary].map(c => c.charCodeAt(0)));
+                    contentText = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+                } catch (e2) {
+                    throw new Error('内容解码失败');
+                }
+            }
+            return JSON.parse(contentText);
         }
 
         // 工具函数
