@@ -1,17 +1,5 @@
 {
   "version": "1.2",
-  "data": {
-    "1755768644224_image.jpg": {
-      "name": "image.jpg",
-      "fileName": "1755768644224_image.jpg",
-      "folder": "20250821_1251020084884923",
-      "lpNumber": "00755467220080",
-      "contractNumber": "1251020084884923",
-      "size": 2556571,
-      "url": "https://cdn.jsdelivr.net/gh/Noir2002/file-storage@main/20250821_1251020084884923/1755768644224_image.jpg",
-      "downloadUrl": "https://raw.githubusercontent.com/Noir2002/file-storage/main/20250821_1251020084884923/1755768644224_image.jpg",
-      "uploadTime": "2025-08-21T09:30:46.692Z"
-    }
-  },
-  "timestamp": 1755768646692
+  "data": {},
+  "timestamp": 1755768750002
 }
