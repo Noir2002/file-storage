@@ -304,6 +304,43 @@
             min-width: auto;
         }
 
+        /* 选择文件预览样式 */
+        .preview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 12px;
+            margin-top: 10px;
+        }
+        .preview-item {
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 8px;
+            background: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .preview-thumb {
+            width: 100%;
+            height: 100px;
+            object-fit: cover;
+            border-radius: 6px;
+            background: #f7fafc;
+        }
+        .preview-video {
+            width: 100%;
+            height: 100px;
+            border-radius: 6px;
+            background: #000;
+        }
+        .preview-name {
+            margin-top: 6px;
+            font-size: 12px;
+            color: #4a5568;
+            text-align: center;
+            word-break: break-all;
+        }
+
         /* 数据库管理样式 */
         .database-info {
             background: #f7fafc;
@@ -619,6 +656,10 @@
                     <div id="selectedFilesActions" style="margin-top: 8px; display: none;">
                         <button type="button" class="btn btn-small btn-secondary" onclick="clearSelectedFiles()">🧹 清空选择</button>
                     </div>
+                    <div id="selectedFilesPreviewContainer" style="display: none; margin-top: 8px;">
+                        <div style="color: #718096; margin-bottom: 6px;">文件预览</div>
+                        <div id="selectedFilesPreview" class="preview-grid"></div>
+                    </div>
                 </div>
 
                 <div style="margin: 20px 0;">
@@ -696,6 +737,7 @@
         let pendingUploadContext = null;
         let databaseImportDate = null;
         let desktopSelectedFiles = [];
+        let previewObjectUrls = [];
 
         // GitHub 配置
         const GITHUB_CONFIG = {
@@ -1287,6 +1329,7 @@
             // 清空累计与展示
             desktopSelectedFiles = [];
             updateSelectedFilesInfo();
+            updateSelectedFilesPreview();
         }
 
         // 上传单个文件到GitHub
@@ -1526,6 +1569,7 @@
                 // 重置 input，便于再次选择同名文件
                 input.value = '';
                 updateSelectedFilesInfo();
+                updateSelectedFilesPreview();
             } catch (e) {
                 console.warn('处理文件选择失败:', e);
             }
@@ -1553,6 +1597,63 @@
             const input = document.getElementById('fileInput');
             if (input) input.value = '';
             updateSelectedFilesInfo();
+            updateSelectedFilesPreview();
+        }
+
+        function revokePreviewUrls() {
+            try {
+                if (previewObjectUrls && previewObjectUrls.length) {
+                    for (const url of previewObjectUrls) {
+                        try { URL.revokeObjectURL(url); } catch (e) {}
+                    }
+                }
+            } catch (e) {}
+            previewObjectUrls = [];
+        }
+
+        function updateSelectedFilesPreview() {
+            const container = document.getElementById('selectedFilesPreviewContainer');
+            const grid = document.getElementById('selectedFilesPreview');
+            if (!container || !grid) return;
+
+            if (!desktopSelectedFiles || desktopSelectedFiles.length === 0) {
+                container.style.display = 'none';
+                grid.innerHTML = '';
+                revokePreviewUrls();
+                return;
+            }
+
+            container.style.display = 'block';
+            revokePreviewUrls();
+
+            const maxPreview = 100;
+            const filesToShow = desktopSelectedFiles.slice(0, maxPreview);
+            const items = filesToShow.map(f => {
+                const url = URL.createObjectURL(f);
+                previewObjectUrls.push(url);
+                const safeName = (f.name || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                if (f.type && f.type.startsWith('image/')) {
+                    return `
+                        <div class="preview-item">
+                            <img class="preview-thumb" src="${url}" alt="${safeName}">
+                            <div class="preview-name">${safeName}</div>
+                        </div>`;
+                } else if (f.type && f.type.startsWith('video/')) {
+                    return `
+                        <div class="preview-item">
+                            <video class="preview-video" src="${url}" muted playsinline preload="metadata"></video>
+                            <div class="preview-name">${safeName}</div>
+                        </div>`;
+                } else {
+                    return `
+                        <div class="preview-item">
+                            <div class="preview-thumb" style="display:flex;align-items:center;justify-content:center;color:#718096;">文件</div>
+                            <div class="preview-name">${safeName}</div>
+                        </div>`;
+                }
+            }).join('');
+
+            grid.innerHTML = items;
         }
 
         // 文件管理相关函数
