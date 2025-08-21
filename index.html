@@ -648,9 +648,9 @@
                 
                 <div class="form-group">
                     <label for="fileInput">选择要上传的文件：</label>
-                    <input type="file" id="fileInput" multiple onchange="handleFileInputChange()">
+                    <input type="file" id="fileInput" multiple accept="image/*,video/*" onchange="handleFileInputChange()">
                     <small id="fileInputTip" style="color: #718096; margin-top: 5px; display: block;">
-                        支持多文件选择，建议单个文件不超过50MB
+                        支持多文件选择，最多10个，建议单个文件不超过50MB
                     </small>
                     <div id="selectedFilesInfo" style="color: #718096; margin-top: 8px; display: none;"></div>
                     <div id="selectedFilesActions" style="margin-top: 8px; display: none;">
@@ -1246,6 +1246,10 @@
                 showStatus('uploadStatus', '请选择要上传的文件', 'error');
                 return;
             }
+            if (files.length > 10) {
+                showStatus('uploadStatus', '一次最多上传10个文件，请减少选择数量', 'error');
+                return;
+            }
             if (databaseData.size === 0) {
                 showStatus('uploadStatus', '请先导入数据库', 'error');
                 return;
@@ -1624,7 +1628,7 @@
 
                 if (isMobile) {
                     // 移动端保持原有行为（一次性多选）
-                    desktopSelectedFiles = newFiles;
+                    desktopSelectedFiles = newFiles.slice(0, 10);
                 } else {
                     // 桌面端累积
                     const existingNames = new Set(desktopSelectedFiles.map(f => f.name + '_' + f.size));
@@ -1633,6 +1637,7 @@
                         if (!existingNames.has(key)) {
                             desktopSelectedFiles.push(f);
                             existingNames.add(key);
+                            if (desktopSelectedFiles.length >= 10) break;
                         }
                     }
                 }
@@ -1655,7 +1660,11 @@
                 const totalSize = desktopSelectedFiles.reduce((s, f) => s + (f.size || 0), 0);
                 info.style.display = 'block';
                 actions.style.display = 'block';
-                info.textContent = `已选择 ${count} 个文件，共 ${formatFileSize(totalSize)}`;
+                info.textContent = `已选择 ${count} / 10 个文件，共 ${formatFileSize(totalSize)}`;
+                if (count > 10) {
+                    // 理论上不会超过，兜底处理
+                    desktopSelectedFiles = desktopSelectedFiles.slice(0, 10);
+                }
             } else {
                 info.style.display = 'none';
                 actions.style.display = 'none';
