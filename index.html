@@ -1836,6 +1836,7 @@
                             <div class="file-actions">
                                 <button class="btn btn-small" onclick="event.stopPropagation(); setManageLevel('date', {date: '${date}'})">进入</button>
                                 <button class="btn btn-small btn-success" onclick="event.stopPropagation(); exportFilesByDate('${date}')">导出当天</button>
+                                <button class="btn btn-small btn-danger" onclick="event.stopPropagation(); deleteDateFolders('${date}')">删除当天</button>
                             </div>
                         </div>
                     `;
@@ -1856,7 +1857,8 @@
                                 <div class="file-details">文件: ${files.length}</div>
                             </div>
                             <div class="file-actions">
-                                <button class="btn btn-small">进入</button>
+                                <button class="btn btn-small" onclick="event.stopPropagation(); setManageLevel('folder', {date: '${date}', folder: '${folder}'})">进入</button>
+                                <button class="btn btn-small btn-danger" onclick="event.stopPropagation(); deleteFolder('${folder}')">删除文件夹</button>
                             </div>
                         </div>
                     `;
@@ -1963,7 +1965,7 @@
                 unpackedLPs: new Set(),
                 unmatchedFolders: new Set(),
                 unmatchedDetails: [], // { folder, suffix, fileCount }
-                packedFolders: new Set(), // 唯一“已打包文件夹”集合
+                packedFolders: new Set(), // 唯一"已打包文件夹"集合
                 requiredContracts: new Set(),
                 contractToLP: new Map()
             };
@@ -1996,7 +1998,7 @@
                 folderToFilesCount.set(folder, (folderToFilesCount.get(folder) || 0) + 1);
             }
 
-            // 依据文件夹名中的履约单号与数据库匹配，统计“已打包文件夹”
+            // 依据文件夹名中的履约单号与数据库匹配，统计"已打包文件夹"
             for (const folder of folderToLPs.keys()) {
                 const m = folder.match(new RegExp(`^${dateStr}_(.+)$`));
                 if (!m) continue;
@@ -2061,7 +2063,7 @@
 
             container.style.display = 'block';
             dateEl.textContent = dateStr;
-            // 显示“已打包文件夹”按唯一文件夹数统计
+            // 显示"已打包文件夹"按唯一文件夹数统计
             packedEl.textContent = packedFolders.size;
             totalEl.textContent = requiredLPs.size;
             // 待打包 = 需打包总数 - 已打包文件夹数（下限0）
@@ -2456,6 +2458,42 @@
             closeDeleteByFolderModal();
             displayFileList();
             showStatus('fileManageStatus', '✅ 已删除所选文件夹内的文件记录', 'success');
+        }
+
+        // 删除某天的所有文件夹
+        function deleteDateFolders(dateStr) {
+            if (!confirm(`确定要删除 ${dateStr} 的所有文件夹吗？此操作不可恢复。`)) return;
+            let changed = false;
+            for (const [key, file] of Array.from(uploadedFiles.entries())) {
+                if (file && String(file.folder || '').startsWith(dateStr + '_')) {
+                    uploadedFiles.delete(key);
+                    changed = true;
+                }
+            }
+            if (changed) {
+                saveFilesToLocal();
+                saveFilesRegistryToGitHub().catch(err => console.warn('删除后同步失败:', err.message));
+            }
+            displayFileList();
+            showStatus('fileManageStatus', `✅ 已删除 ${dateStr} 的所有文件夹记录`, 'success');
+        }
+
+        // 删除单个文件夹
+        function deleteFolder(folder) {
+            if (!confirm(`确定要删除文件夹 ${folder} 吗？此操作不可恢复。`)) return;
+            let changed = false;
+            for (const [key, file] of Array.from(uploadedFiles.entries())) {
+                if (file && String(file.folder) === folder) {
+                    uploadedFiles.delete(key);
+                    changed = true;
+                }
+            }
+            if (changed) {
+                saveFilesToLocal();
+                saveFilesRegistryToGitHub().catch(err => console.warn('删除后同步失败:', err.message));
+            }
+            displayFileList();
+            showStatus('fileManageStatus', `✅ 已删除文件夹 ${folder} 的记录`, 'success');
         }
 
         function deleteFile(fileName) {
