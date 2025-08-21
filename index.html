@@ -391,13 +391,15 @@
 
         .modal-content {
             background-color: white;
-            margin: 10% auto;
+            margin: 5% auto;
             padding: 20px;
             border-radius: 15px;
             width: 90%;
             max-width: 500px;
+            max-height: 80vh;
             position: relative;
             animation: modalSlideIn 0.3s ease;
+            overflow: hidden;
         }
 
         /* 数据库预览：移动端友好的表格样式 */
@@ -438,6 +440,16 @@
 
         /* 响应式设计 */
         @media (max-width: 768px) {
+            .modal-content {
+                margin: 2% auto;
+                max-height: 90vh;
+                width: 95%;
+                padding: 15px;
+            }
+            
+            #deleteFolderOptions {
+                max-height: 250px !important;
+            }
             .nav-container {
                 flex-direction: column;
                 align-items: stretch;
@@ -752,7 +764,7 @@
                 <h2>选择要删除的文件夹</h2>
                 <button class="close" onclick="closeDeleteByFolderModal()">&times;</button>
             </div>
-            <div id="deleteFolderOptions"></div>
+            <div id="deleteFolderOptions" style="max-height: 300px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; margin-bottom: 20px;"></div>
             <div style="text-align: center; margin-top: 20px;">
                 <button onclick="confirmDeleteByFolder()" class="btn btn-danger">确定删除</button>
                 <button onclick="closeDeleteByFolderModal()" class="btn btn-secondary">取消</button>
@@ -2420,9 +2432,9 @@
                 // 直接从文件注册表收集所有文件夹（包含 unknown，方便清理）
                 const folders = new Set(Array.from(uploadedFiles.values()).map(f => (f && f.folder) ? f.folder : 'unknown'));
                 const items = Array.from(folders).sort((a, b) => b.localeCompare(a)).map(f => `
-                    <label style="display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid #e2e8f0;">
-                        <input type="checkbox" value="${f}" onchange="toggleDeleteFolderSelection(this)">
-                        <span style="word-break:break-all;">${f}</span>
+                    <label style="display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid #e2e8f0; background: #f8fafc; border-radius: 4px; margin-bottom: 4px; transition: background-color 0.2s; cursor: pointer;" onmouseover="this.style.background='#edf2f7'" onmouseout="this.style.background='#f8fafc'">
+                        <input type="checkbox" value="${f}" onchange="toggleDeleteFolderSelection(this)" style="margin: 0;">
+                        <span style="word-break:break-all; color: #2d3748; font-weight: 500;">${f}</span>
                     </label>
                 `).join('');
                 list.innerHTML = items || '<div style="color:#718096;">暂无可删除的文件夹</div>';
