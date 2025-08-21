@@ -1111,14 +1111,55 @@
                 const worksheet = workbook.Sheets[workbook.SheetNames[0]];
                 const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
 
+                if (data.length < 2) {
+                    throw new Error('Excel文件至少需要包含标题行和一行数据');
+                }
+
+                // 自动识别列：通过第一行标题判断哪列是LP号，哪列是履约单号
+                const headers = data[0];
+                let lpColumnIndex = -1;
+                let contractColumnIndex = -1;
+                
+                for (let i = 0; i < headers.length; i++) {
+                    const header = String(headers[i] || '').toLowerCase().trim();
+                    if (header.includes('lp') || header.includes('lp号') || header.includes('lp号')) {
+                        lpColumnIndex = i;
+                    } else if (header.includes('履约') || header.includes('合同') || header.includes('contract')) {
+                        contractColumnIndex = i;
+                    }
+                }
+                
+                // 如果没找到明确的标题，尝试通过内容特征判断
+                if (lpColumnIndex === -1 || contractColumnIndex === -1) {
+                    for (let i = 0; i < headers.length; i++) {
+                        const header = String(headers[i] || '').toLowerCase().trim();
+                        if (lpColumnIndex === -1 && (header.includes('号') || header.includes('number'))) {
+                            lpColumnIndex = i;
+                        } else if (contractColumnIndex === -1 && (header.includes('单') || header.includes('单号'))) {
+                            contractColumnIndex = i;
+                        }
+                    }
+                }
+                
+                // 如果还是没找到，使用默认顺序（第一列LP号，第二列履约单号）
+                if (lpColumnIndex === -1) lpColumnIndex = 0;
+                if (contractColumnIndex === -1) contractColumnIndex = 1;
+                
+                // 确保两列不同
+                if (lpColumnIndex === contractColumnIndex) {
+                    contractColumnIndex = lpColumnIndex === 0 ? 1 : 0;
+                }
+                
+                showStatus('databaseStatus', `识别列：第${lpColumnIndex + 1}列为LP号，第${contractColumnIndex + 1}列为履约单号`, 'info');
+
                 databaseData.clear();
                 let validRecords = 0;
 
                 for (let i = 1; i < data.length; i++) {
                     const row = data[i];
-                    if (row.length >= 2 && row[0] && row[1]) {
-                        const lpNumber = String(row[0]).replace(/[^\d]/g, '');
-                        const contractNumber = String(row[1]).trim();
+                    if (row.length > Math.max(lpColumnIndex, contractColumnIndex) && row[lpColumnIndex] && row[contractColumnIndex]) {
+                        const lpNumber = String(row[lpColumnIndex]).replace(/[^\d]/g, '');
+                        const contractNumber = String(row[contractColumnIndex]).trim();
                         
                         if (lpNumber && contractNumber) {
                             databaseData.set(lpNumber, contractNumber);
