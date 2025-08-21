@@ -710,6 +710,10 @@
                             <div class="stat-label">未匹配文件夹</div>
                         </div>
                     </div>
+                    <div id="autoFixBanner" class="alert alert-info" style="display:none;">
+                        发现 <span id="autoFixCount">0</span> 个未匹配文件夹可根据后缀自动修正。
+                        <button class="btn btn-small" onclick="openAutoFixModal()">查看建议</button>
+                    </div>
                 </div>
 
                 <div id="fileListContainer">
@@ -793,6 +797,25 @@
                 <button class="btn btn-secondary" onclick="closeFixUnmatchedModal()">取消</button>
             </div>
             <div id="fixStatus" style="margin-top:12px;"></div>
+        </div>
+    </div>
+
+    <!-- 自动修正建议 模态框 -->
+    <div id="autoFixModal" class="modal">
+        <div class="modal-content" style="max-width:720px;">
+            <div class="modal-header">
+                <h2>自动修正建议</h2>
+                <button class="close" onclick="closeAutoFixModal()">&times;</button>
+            </div>
+            <div style="color:#718096; margin-bottom:10px;">
+                根据未匹配文件夹的后缀与数据库中新增的履约单号进行匹配，您可以一键修正。
+            </div>
+            <div id="autoFixList" class="db-table" style="max-height:360px; overflow:auto;"></div>
+            <div style="text-align:center; margin-top:16px;">
+                <button class="btn btn-success" onclick="applyAutoFixAll()">一键修正全部</button>
+                <button class="btn btn-secondary" onclick="closeAutoFixModal()">关闭</button>
+            </div>
+            <div id="autoFixStatus" style="margin-top:12px;"></div>
         </div>
     </div>
 
@@ -1937,46 +1960,53 @@
                 packedDetails: [], // { lp, contract, folder }
                 unpackedLPs: new Set(),
                 unmatchedFolders: new Set(),
-                unmatchedDetails: [] // { folder, suffix, fileCount }
+                unmatchedDetails: [], // { folder, suffix, fileCount }
+                packedFolders: new Set(), // 唯一“已打包文件夹”集合
+                requiredContracts: new Set(),
+                contractToLP: new Map()
             };
 
             if (!dateStr || databaseData.size === 0) {
                 return result;
             }
 
-            // 收集需打包LP集合
+            // 收集需打包集合与索引：LP集合、合同集合、合同->LP
             for (const [lp, contract] of databaseData.entries()) {
-                if (lp) result.requiredLPs.add(String(lp));
+                const lpStr = String(lp);
+                const contractStr = String(contract || '').trim();
+                if (lpStr) result.requiredLPs.add(lpStr);
+                if (contractStr) {
+                    result.requiredContracts.add(contractStr);
+                    if (!result.contractToLP.has(contractStr)) result.contractToLP.set(contractStr, lpStr);
+                }
             }
 
-            // 从已上传记录中，定位当天的文件夹与其中的LP
-            const folderToLPs = new Map(); // folder -> Set(lp)
-            const folderToContracts = new Map(); // folder -> Set(contract)
+            // 从已上传记录中，定位当天的文件夹与统计文件数
+            const folderToLPs = new Map(); // folder -> Set(lp)（保留，供统计预览用）
             const folderToFilesCount = new Map(); // folder -> count
             for (const [, file] of uploadedFiles.entries()) {
                 const folder = file && file.folder ? String(file.folder) : '';
                 if (!folder.startsWith(dateStr)) continue; // 仅当日
                 const lp = file && file.lpNumber ? String(file.lpNumber) : '';
-                const contract = file && file.contractNumber ? String(file.contractNumber) : '';
                 if (!folderToLPs.has(folder)) folderToLPs.set(folder, new Set());
-                if (!folderToContracts.has(folder)) folderToContracts.set(folder, new Set());
                 if (!folderToFilesCount.has(folder)) folderToFilesCount.set(folder, 0);
                 if (lp) folderToLPs.get(folder).add(lp);
-                if (contract) folderToContracts.get(folder).add(contract);
                 folderToFilesCount.set(folder, (folderToFilesCount.get(folder) || 0) + 1);
             }
 
-            // 将与数据库LP匹配的视为已打包（按LP唯一）
-            const seenLP = new Set();
-            for (const [folder, lps] of folderToLPs.entries()) {
-                for (const lp of lps) {
-                    if (result.requiredLPs.has(lp) && !seenLP.has(lp)) {
-                        // 取数据库中的合同号
-                        const contract = databaseData.get(lp) || '';
-                        result.packedLPs.add(lp);
-                        seenLP.add(lp);
-                        result.packedDetails.push({ lp, contract, folder });
-                    }
+            // 依据文件夹名中的履约单号与数据库匹配，统计“已打包文件夹”
+            for (const folder of folderToLPs.keys()) {
+                const m = folder.match(new RegExp(`^${dateStr}_(.+)$`));
+                if (!m) continue;
+                const namePartRaw = m[1] || '';
+                const namePart = namePartRaw.trim();
+                // 已在前面统计过未匹配（四位数字后缀）的，这里只处理带履约单号的
+                if (result.unmatchedFolders.has(folder)) continue;
+                if (result.requiredContracts.has(namePart)) {
+                    result.packedFolders.add(folder);
+                    const lpForContract = result.contractToLP.get(namePart) || '';
+                    if (lpForContract) result.packedLPs.add(lpForContract);
+                    result.packedDetails.push({ lp: lpForContract, contract: namePart, folder });
                 }
             }
 
@@ -2020,7 +2050,7 @@
             if (!container || !dateEl || !packedEl || !unpackedEl || !totalEl) return;
 
             lastPackingComputation = computePackingProgress();
-            const { dateStr, requiredLPs, packedLPs, unmatchedFolders } = lastPackingComputation;
+            const { dateStr, requiredLPs, unmatchedFolders, packedFolders } = lastPackingComputation;
 
             if (!dateStr || requiredLPs.size === 0) {
                 container.style.display = 'none';
@@ -2029,10 +2059,163 @@
 
             container.style.display = 'block';
             dateEl.textContent = dateStr;
-            packedEl.textContent = packedLPs.size;
+            // 显示“已打包文件夹”按唯一文件夹数统计
+            packedEl.textContent = packedFolders.size;
             totalEl.textContent = requiredLPs.size;
-            unpackedEl.textContent = Math.max(0, requiredLPs.size - packedLPs.size);
+            // 待打包 = 需打包总数 - 已打包文件夹数（下限0）
+            unpackedEl.textContent = Math.max(0, requiredLPs.size - packedFolders.size);
             if (unmatchedEl) unmatchedEl.textContent = unmatchedFolders.size;
+
+            // 自动修正建议：找出未匹配后缀能唯一匹配到数据库某履约单号的项
+            const banner = document.getElementById('autoFixBanner');
+            const dateStrVal = getImportDateStr();
+            let candidates = buildAutoFixCandidates(dateStrVal);
+            if (banner) {
+                if (candidates.length > 0) {
+                    banner.style.display = 'block';
+                    const cnt = document.getElementById('autoFixCount');
+                    if (cnt) cnt.textContent = String(candidates.length);
+                } else {
+                    banner.style.display = 'none';
+                }
+            }
+        }
+
+        function buildAutoFixCandidates(dateStr) {
+            try {
+                if (!lastPackingComputation || !dateStr) return [];
+                const { unmatchedDetails } = lastPackingComputation;
+                if (!unmatchedDetails || unmatchedDetails.length === 0) return [];
+                // 依据后缀匹配数据库中 LP，以 LP 找到履约单号
+                const res = [];
+                const seenFolder = new Set();
+                for (const it of unmatchedDetails) {
+                    const suffix = String(it.suffix || '');
+                    if (!/^\d{4}$/.test(suffix)) continue;
+                    // 找出所有以该后缀结尾的 LP
+                    const matches = [];
+                    for (const [lp, contract] of databaseData.entries()) {
+                        if (String(lp).endsWith(suffix)) {
+                            matches.push({ lp: String(lp), contract: String(contract || '') });
+                        }
+                    }
+                    if (matches.length === 1) {
+                        const m = matches[0];
+                        if (!seenFolder.has(it.folder)) {
+                            res.push({ folder: it.folder, suffix, lp: m.lp, contract: m.contract, dateStr });
+                            seenFolder.add(it.folder);
+                        }
+                    }
+                }
+                return res;
+            } catch (e) { return []; }
+        }
+
+        function openAutoFixModal() {
+            const modal = document.getElementById('autoFixModal');
+            const list = document.getElementById('autoFixList');
+            const dateStr = getImportDateStr();
+            if (!modal || !list) return;
+            const items = buildAutoFixCandidates(dateStr);
+            if (!items.length) {
+                list.innerHTML = '<div style="padding:12px; color:#718096;">暂无可自动修正的项</div>';
+            } else {
+                const header = `
+                    <div class="db-row db-header">
+                        <div class="db-cell">原文件夹</div>
+                        <div class="db-cell">建议履约单号</div>
+                        <div class="db-cell">建议LP号</div>
+                        <div class="db-cell">操作</div>
+                    </div>`;
+                const body = items.map(it => {
+                    const f = it.folder.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                    const jf = it.folder.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+                    const jc = it.contract.replace(/'/g,"\\'");
+                    const jlp = it.lp.replace(/'/g,"\\'");
+                    return `
+                        <div class="db-row">
+                            <div class="db-cell">${f}</div>
+                            <div class="db-cell">${it.contract}</div>
+                            <div class="db-cell">${it.lp}</div>
+                            <div class="db-cell"><button class="btn btn-small btn-success" onclick="applyAutoFixOne('${jf}','${jc}','${jlp}')">修正</button></div>
+                        </div>`;
+                }).join('');
+                list.innerHTML = header + body;
+            }
+            const status = document.getElementById('autoFixStatus');
+            if (status) status.innerHTML = '';
+            modal.style.display = 'block';
+        }
+
+        function closeAutoFixModal() {
+            const modal = document.getElementById('autoFixModal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        function applyAutoFixOne(folder, contract, lp) {
+            // 重用 confirmFixUnmatchedFolder 的核心逻辑，但参数化
+            try {
+                const dateStr = getImportDateStr();
+                if (!dateStr || !folder.startsWith(dateStr + '_')) {
+                    showStatus('autoFixStatus', '仅允许修正当日文件夹', 'error');
+                    return;
+                }
+                const newFolder = `${dateStr}_${contract}`;
+                let changed = false;
+                for (const [key, file] of Array.from(uploadedFiles.entries())) {
+                    if (file && String(file.folder) === folder) {
+                        file.folder = newFolder;
+                        file.lpNumber = lp;
+                        file.contractNumber = contract;
+                        uploadedFiles.set(key, file);
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    saveFilesToLocal();
+                    saveFilesRegistryToGitHub().catch(err => console.warn('自动修正同步失败:', err.message));
+                    displayFileList();
+                    updatePackingInfo();
+                    showStatus('autoFixStatus', `✅ 已修正 ${folder} → ${newFolder}`, 'success');
+                } else {
+                    showStatus('autoFixStatus', '未找到需要修正的记录', 'warning');
+                }
+            } catch (e) {
+                showStatus('autoFixStatus', `❌ 修正失败：${e.message}`, 'error');
+            }
+        }
+
+        function applyAutoFixAll() {
+            const dateStr = getImportDateStr();
+            const items = buildAutoFixCandidates(dateStr);
+            if (!items.length) {
+                showStatus('autoFixStatus', '暂无可修正项', 'warning');
+                return;
+            }
+            let total = 0;
+            for (const it of items) {
+                // 顺序执行，遇到个别失败不影响其他
+                const before = total;
+                (function(folder, contract, lp){
+                    const newFolder = `${dateStr}_${contract}`;
+                    let changed = false;
+                    for (const [key, file] of Array.from(uploadedFiles.entries())) {
+                        if (file && String(file.folder) === folder) {
+                            file.folder = newFolder;
+                            file.lpNumber = lp;
+                            file.contractNumber = contract;
+                            uploadedFiles.set(key, file);
+                            changed = true;
+                        }
+                    }
+                    if (changed) total = before + 1;
+                })(it.folder, it.contract, it.lp);
+            }
+            saveFilesToLocal();
+            saveFilesRegistryToGitHub().catch(err => console.warn('自动修正同步失败:', err.message));
+            displayFileList();
+            updatePackingInfo();
+            showStatus('autoFixStatus', `✅ 已修正 ${total} 个文件夹`, 'success');
         }
 
         function openPackingDetail(type) {
@@ -2046,21 +2229,37 @@
             if (!modal || !title || !summary || !list) return;
 
             if (type === 'packed') {
-                title.textContent = '已打包LP号列表';
-                summary.textContent = `共 ${packedDetails.length} 条。`;
+                title.textContent = '已打包文件夹列表';
+                // 汇总：文件夹 / 履约单号 / LP号
+                const rows = (packedDetails || []).map(it => ({
+                    folder: it.folder,
+                    contract: it.contract || '',
+                    lp: it.lp || ''
+                }));
+                // 去重文件夹
+                const seen = new Set();
+                const dedup = [];
+                for (const r of rows) {
+                    if (seen.has(r.folder)) continue;
+                    seen.add(r.folder);
+                    dedup.push(r);
+                }
+                summary.textContent = `共 ${dedup.length} 个文件夹。`;
                 const header = `
                     <div class="db-row db-header">
-                        <div class="db-cell">LP号</div>
                         <div class="db-cell">文件夹</div>
+                        <div class="db-cell">履约单号</div>
+                        <div class="db-cell">LP号</div>
                     </div>`;
-                const body = packedDetails.map(item => `
+                const body = dedup.map(r => `
                     <div class="db-row">
-                        <div class="db-cell">${item.lp}</div>
-                        <div class="db-cell">${item.folder}</div>
+                        <div class="db-cell">${r.folder}</div>
+                        <div class="db-cell">${r.contract}</div>
+                        <div class="db-cell">${r.lp}</div>
                     </div>`).join('');
                 list.innerHTML = header + body;
             } else if (type === 'unpacked') {
-                title.textContent = '待打包LP号列表';
+                title.textContent = '待打包LP/履约单号列表';
                 const arr = Array.from(unpackedLPs);
                 summary.textContent = `共 ${arr.length} 条。`;
                 const header = `
@@ -2091,11 +2290,33 @@
                     const safeFolder = it.folder.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                     const jsFolder = it.folder.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
                     const jsSuffix = (it.suffix || '').replace(/'/g, "\\'");
+                    // 唯一匹配建议：根据后缀查数据库 LP，再取履约单号
+                    let suggestionBtn = '';
+                    try {
+                        const suffix = String(it.suffix || '');
+                        if (/^\d{4}$/.test(suffix)) {
+                            const matches = [];
+                            for (const [lp, contract] of databaseData.entries()) {
+                                if (String(lp).endsWith(suffix)) {
+                                    matches.push({ lp: String(lp), contract: String(contract || '') });
+                                }
+                            }
+                            if (matches.length === 1) {
+                                const m = matches[0];
+                                const jc = m.contract.replace(/'/g, "\\'");
+                                const jlp = m.lp.replace(/'/g, "\\'");
+                                suggestionBtn = `<button class="btn btn-small btn-success" onclick="applyAutoFixOne('${jsFolder}','${jc}','${jlp}')">修正为 ${m.contract}</button>`;
+                            }
+                        }
+                    } catch (e) {}
+                    if (!suggestionBtn) {
+                        suggestionBtn = `<button class=\"btn btn-small\" onclick=\"openFixUnmatchedFolderModal('${jsFolder}', '${jsSuffix}')\">修正</button>`;
+                    }
                     return `
                     <div class="db-row">
                         <div class="db-cell">${safeFolder}</div>
                         <div class="db-cell">${it.fileCount}</div>
-                        <div class="db-cell"><button class="btn btn-small" onclick="openFixUnmatchedFolderModal('${jsFolder}', '${jsSuffix}')">修正</button></div>
+                        <div class="db-cell">${suggestionBtn}</div>
                     </div>`;
                 }).join('');
                 list.innerHTML = header + body;
@@ -2694,6 +2915,10 @@
             const fixModal = document.getElementById('fixUnmatchedModal');
             if (event.target === fixModal) {
                 closeFixUnmatchedModal();
+            }
+            const autoFix = document.getElementById('autoFixModal');
+            if (event.target === autoFix) {
+                closeAutoFixModal();
             }
         }
     </script>
