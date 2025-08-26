@@ -1416,6 +1416,9 @@
             document.getElementById('lpSelectionModal').style.display = 'none';
         }
 
+        // 简单延时工具
+        function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
         // 上传文件到GitHub
         async function uploadFilesToGitHub(files, folderName, lpNumber, contractNumber) {
             let successCount = 0;
@@ -1433,7 +1436,8 @@
                         .replace(/[^a-zA-Z0-9.\-_\u4e00-\u9fa5]/g, '_')
                         .replace(/\s+/g, '_')
                         .replace(/_{2,}/g, '_');
-                    const fileName = `${Date.now()}_${cleanName}`;
+                    const uniqueSuffix = `${i}_${Math.random().toString(36).slice(2, 6)}`;
+                    const fileName = `${Date.now()}_${uniqueSuffix}_${cleanName}`;
 
                     const result = await uploadToGitHub(file, folderName, fileName);
                     
@@ -1458,6 +1462,9 @@
                 } catch (error) {
                     failedFiles.push(file.name);
                 }
+
+                // 文件间加入小幅抖动延迟，缓解网络拥塞/限流
+                await sleep(200 + Math.floor(Math.random() * 300));
             }
 
             showUploadProgress(100);
@@ -1559,32 +1566,44 @@
                     branch: GITHUB_CONFIG.branch
                 };
                 
-                // 移动端使用XMLHttpRequest，桌面端使用Fetch
+                // 移动端使用XMLHttpRequest，桌面端使用Fetch；均增加重试与退避
                 if (isMobile) {
-                    return await uploadWithXHR(url, requestHeaders, requestPayload, startTime);
+                    let attempt = 0;
+                    while (attempt < 3) {
+                        try {
+                            return await uploadWithXHR(url, requestHeaders, requestPayload, startTime);
+                        } catch (e) {
+                            attempt++;
+                            if (attempt >= 3) throw e;
+                            const backoff = 600 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 300);
+                            await sleep(backoff);
+                        }
+                    }
                 } else {
-                    const response = await fetch(url, {
-                        method: 'PUT',
-                        headers: requestHeaders,
-                        body: JSON.stringify(requestPayload)
-                    });
-                    
-                    if (response.ok) {
-                        const result = await response.json();
-                        return { 
-                            success: true, 
-                            url: `https://cdn.jsdelivr.net/gh/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}@${GITHUB_CONFIG.branch}/${folderPath}/${fileName}`, 
-                            downloadUrl: result.content.download_url 
-                        };
-                    } else {
+                    let attempt = 0;
+                    while (attempt < 3) {
+                        const response = await fetch(url, {
+                            method: 'PUT',
+                            headers: requestHeaders,
+                            body: JSON.stringify(requestPayload)
+                        });
+                        if (response.ok) {
+                            const result = await response.json();
+                            return { 
+                                success: true, 
+                                url: `https://cdn.jsdelivr.net/gh/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}@${GITHUB_CONFIG.branch}/${folderPath}/${fileName}`, 
+                                downloadUrl: result.content.download_url 
+                            };
+                        }
                         const errorText = await response.text();
                         let errorData;
-                        try {
-                            errorData = JSON.parse(errorText);
-                        } catch {
-                            errorData = { message: errorText };
+                        try { errorData = JSON.parse(errorText); } catch { errorData = { message: errorText }; }
+                        attempt++;
+                        if (attempt >= 3) {
+                            throw new Error(`GitHub API错误 ${response.status}: ${errorData.message || '未知错误'}`);
                         }
-                        throw new Error(`GitHub API错误 ${response.status}: ${errorData.message || '未知错误'}`);
+                        const backoff = 700 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 400);
+                        await sleep(backoff);
                     }
                 }
             } catch (error) {
@@ -1640,7 +1659,7 @@
                         reject(new Error('请求被中断'));
                     };
                     
-                    xhr.timeout = 60000;
+                    xhr.timeout = 180000;
                     xhr.open('PUT', url, true);
                     
                     Object.keys(headers).forEach(key => {
